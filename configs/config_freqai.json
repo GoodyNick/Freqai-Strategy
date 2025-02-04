@@ -1,0 +1,126 @@
+{
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "max_open_trades": 5,
+    "stake_currency": "USDT",
+    "stake_amount": 100,
+    "tradable_balance_ratio": 1,
+    "fiat_display_currency": "USD",
+    "dry_run": true,
+    "timeframe": "3m",
+    "dry_run_wallet": 1000,
+    "cancel_open_orders_on_exit": true,
+    "unfilledtimeout": {
+        "entry": 10,
+        "exit": 30
+    },
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {},
+        "ccxt_async_config": {},
+        "pair_whitelist": [
+            "BTC/USDT:USDT",
+            "ETH/USDT:USDT"
+            // "XRP/USDT:USDT",
+            // "BCH/USDT:USDT",
+            // "LTC/USDT:USDT",
+            // "ADA/USDT:USDT",
+            // "LINK/USDT:USDT",
+            // "DOT/USDT:USDT",
+            // "BNB/USDT:USDT",
+            // "EOS/USDT:USDT",
+            // "TRX/USDT:USDT",
+            // "XLM/USDT:USDT",
+            // "XTZ/USDT:USDT",
+            // "ATOM/USDT:USDT",
+            // "NEO/USDT:USDT",
+            // "IOTA/USDT:USDT",
+            // "ONT/USDT:USDT",
+            // "VET/USDT:USDT",
+            // "ZRX/USDT:USDT",
+            // "ALGO/USDT:USDT"
+        ],
+        "pair_blacklist": []
+    },
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 3,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+    "exit_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 3
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "freqai": {
+        "enabled": true,
+        "purge_old_models": 2,
+        "expiration_hours": 4,
+        "train_period_days": 7,
+        "backtest_period_days": 1,
+        "live_retrain_hours": 12,
+        "identifier": "unique-id-4",
+        "fit_live_predictions_candles": 300,
+        "feature_parameters": {
+            "include_timeframes": [
+                "3m",
+                "5m",
+                "15m",
+                "1h"
+            ],
+            "include_corr_pairlist": [
+                "BTC/USDT:USDT",
+                "ETH/USDT:USDT"
+            ],
+            "label_period_candles": 10,
+            "include_shifted_candles": 2,
+            "DI_threshold": 1.0,
+            "weight_factor": 0.20,
+            "principal_component_analysis": false,
+            "use_SVM_to_remove_outliers": false,
+            "indicator_periods_candles": [
+                5, 
+                10, 
+                20, 
+                50, 
+                200
+            ],
+            "plot_feature_importances": 0
+        },
+        "data_split_parameters": {
+            "test_size": 0.33,
+            "random_state": 1
+        },
+        "model_training_parameters": {}
+    },
+    "bot_name": "",
+    "force_entry_enable": true,
+    "initial_state": "running",
+    "internals": {
+        "process_throttle_secs": 5
+    },
+    "api_server": {
+        "enabled": true,
+        "listen_ip_address": "127.0.0.1",
+        "listen_port": 8080,
+        "verbosity": "error",
+        "enable_openapi": false,
+        "jwt_secret_key": "somethingrandom",
+        "CORS_origins": [],
+        "username": "Freqtrader",
+        "password": "3D$m@x23",
+        "ws_token": "sercet_Ws_t0ken"
+    }
+}
