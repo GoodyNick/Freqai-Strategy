@@ -1,0 +1,2 @@
+pair,total_predictions,fraction_predicted,rolling_accuracy,mae,avg_confidence_correct,correlation
+BTC/USDT:USDT,686,0.8967320261437909,0.74,0.542199214020123,0.45377382084912943,0.1987900821847584
