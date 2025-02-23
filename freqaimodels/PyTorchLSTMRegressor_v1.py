@@ -4,6 +4,7 @@ import torch
 import os
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 
 from freqtrade.freqai.base_models.BasePyTorchRegressor import BasePyTorchRegressor
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
@@ -100,9 +101,10 @@ class PyTorchLSTMRegressor_v1(BasePyTorchRegressor):
 
     def permutation_importance(self, model, X_test, y_test, pair_name, feature_names=None, 
                             importances_file="./user_data/feature_importances.csv", metric='mae', 
-                            num_shuffles=5, top_n=100, importance_threshold=None):
+                            num_shuffles=3, sample_fraction=0.1, top_n=100, importance_threshold=None):
         """
         Compute Permutation Importance for a trained LSTM model and append results to feature_importances.csv.
+        Optimized for faster execution.
         """
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
@@ -122,9 +124,14 @@ class PyTorchLSTMRegressor_v1(BasePyTorchRegressor):
             y_test = y_test.to_numpy()  # ✅ Convert y_test to NumPy array
 
         X_test = X_test.to(device)
-
+        
+        # ✅ Sample a fraction of the test set to speed up calculations
+        sample_size = int(len(X_test) * sample_fraction)
+        X_test_sample = X_test[:sample_size]
+        y_test_sample = y_test[:sample_size]
+        
         with torch.no_grad():
-            y_pred_baseline = model(X_test).cpu().numpy()
+            y_pred_baseline = model(X_test_sample).cpu().numpy()
 
         def calc_metric(y_true, y_pred):
             if metric == 'mae':
@@ -134,33 +141,29 @@ class PyTorchLSTMRegressor_v1(BasePyTorchRegressor):
             else:
                 raise ValueError("Unsupported metric. Use 'mae' or 'mse'.")
 
-        baseline_score = calc_metric(y_test, y_pred_baseline)
+        baseline_score = calc_metric(y_test_sample, y_pred_baseline)
 
-        feature_importance = []
-
-        for feature_idx in range(X_test.shape[1]):
+        def permute_feature(feature_idx):
             scores = []
             for _ in range(num_shuffles):
-                X_shuffled = X_test.clone()
-                perm = torch.randperm(X_test.shape[0])
+                X_shuffled = X_test_sample.clone()
+                perm = torch.randperm(X_test_sample.shape[0])
                 X_shuffled[:, feature_idx] = X_shuffled[perm, feature_idx]
 
                 with torch.no_grad():
                     y_pred_permuted = model(X_shuffled).cpu().numpy()
 
-                score = calc_metric(y_test, y_pred_permuted)
+                score = calc_metric(y_test_sample, y_pred_permuted)
                 scores.append(score)
 
-            importance_value = np.mean(scores) - baseline_score
-            feature_importance.append((pair_name, feature_names[feature_idx], importance_value))
+            return (pair_name, feature_names[feature_idx], np.mean(scores) - baseline_score)
+
+        # ✅ Use parallel computation to speed up processing
+        num_jobs = -1  # Use all available CPU cores
+        feature_importance = Parallel(n_jobs=num_jobs)(delayed(permute_feature)(i) for i in range(X_test_sample.shape[1]))
 
         # ✅ Create DataFrame with Proper Feature Names & Sorting
         df_importance = pd.DataFrame(feature_importance, columns=["Pair", "Feature", "Importance"])
-
-        # ✅ Debug: Check if the Pair column exists in the DataFrame
-        if "Pair" not in df_importance.columns:
-            logger.warning("⚠️ 'Pair' column is missing from DataFrame before saving!")
-
         df_importance = df_importance.sort_values(by="Importance", ascending=False)  # ✅ Sort Descending
 
         # ✅ Apply Filtering Options
@@ -174,7 +177,7 @@ class PyTorchLSTMRegressor_v1(BasePyTorchRegressor):
             df_importance.to_csv(importances_file, mode="a", header=False, index=False, columns=["Pair", "Feature", "Importance"])
         else:
             df_importance.to_csv(importances_file, mode="w", header=True, index=False, columns=["Pair", "Feature", "Importance"])
-        
+
 
 
 

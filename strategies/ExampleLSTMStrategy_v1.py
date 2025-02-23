@@ -3,6 +3,7 @@ from functools import reduce
 from typing import Dict
 import joblib
 import os
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,7 @@ from sklearn.linear_model import Ridge
 
 from freqtrade.exchange.exchange_utils import *
 from freqtrade.strategy import IStrategy, RealParameter
+from freqtrade.persistence import Trade
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +37,6 @@ class ExampleLSTMStrategy_v1(IStrategy):
         },
     }
     
-    # Hyperspace parameters:
-    buy_params = {
-        "threshold_buy": 0.59453,
-        "w0": 0.54347,
-        "w1": 0.82226,
-        "w2": 0.56675,
-        "w3": 0.77918,
-        "w4": 0.98488,
-        "w5": 0.31368,
-        "w6": 0.75916,
-        "w7": 0.09226,
-        "w8": 0.85667,
-    }
-    sell_params = {
-        "threshold_sell": 0.80573,
-    }
     # ROI table:
     minimal_roi = {
         "0": 1  # we let the model decide when to exit
@@ -68,26 +54,17 @@ class ExampleLSTMStrategy_v1(IStrategy):
     threshold_buy = RealParameter(-1, 1, default=0, space='buy')
     threshold_sell = RealParameter(-1, 1, default=0, space='sell')
 
-    # Weights for calculating the aggregate score - the sum of all weighted normalized indicators has to be 1!
-    w0 = RealParameter(0, 1, default=0.10, space='buy')
-    w1 = RealParameter(0, 1, default=0.15, space='buy')
-    w2 = RealParameter(0, 1, default=0.10, space='buy')
-    w3 = RealParameter(0, 1, default=0.15, space='buy')
-    w4 = RealParameter(0, 1, default=0.10, space='buy')
-    w5 = RealParameter(0, 1, default=0.10, space='buy')
-    w6 = RealParameter(0, 1, default=0.10, space='buy')
-    w7 = RealParameter(0, 1, default=0.05, space='buy')
-    w8 = RealParameter(0, 1, default=0.15, space='buy')
-
     timeframe = "1h"
     can_short = True
     use_exit_signal = True
     process_only_new_candles = True
+    use_custom_stoploss = True
 
     startup_candle_count = 20
 
-    do_normalize = True # Set to True to normalize the indicators
-    dynamic_target_weights = False  # Set to True to enable dynamic calculation of target weights
+    do_remove_highly_correlated_features = False  # Set to True to remove highly correlated features(enabling this causes 
+                                                  # mismatch between features in trained models and backtest features)
+                                                
     prediction_metrics_storage = []  # Class-level storage for all pairs
 
     def feature_engineering_expand_all(self, dataframe: DataFrame, period: int,
@@ -116,6 +93,10 @@ class ExampleLSTMStrategy_v1(IStrategy):
                 dataframe["close"] / dataframe["bb_lowerband-period"]
         )
 
+        # Remove highly correlated features
+        if self.do_remove_highly_correlated_features:
+            logger.info(f"🔍 Removing highly correlated features.{self.do_remove_highly_correlated_features}")
+            dataframe = self.remove_highly_correlated_features(dataframe)
         return dataframe
 
     def feature_engineering_expand_basic(self, dataframe: DataFrame, metadata: Dict, **kwargs):
@@ -123,16 +104,6 @@ class ExampleLSTMStrategy_v1(IStrategy):
         dataframe["%-pct-change"] = dataframe["close"].pct_change()
         dataframe["%-raw_volume"] = dataframe["volume"]
         dataframe["%-raw_price"] = dataframe["close"]
-
-        if self.do_normalize:
-            numeric_features = [col for col in dataframe.columns if col.startswith("%-") and dataframe[col].dtype in [np.float64, np.int64]]
-            logger.info(f"🔍 Normalizing {len(numeric_features)} features: {numeric_features}")
-            if numeric_features:
-                scaler = StandardScaler()
-                dataframe[numeric_features] = scaler.fit_transform(dataframe[numeric_features])
-                # ✅ Save scaler for consistent feature scaling in live trading
-                joblib.dump({"scaler": scaler, "features": numeric_features}, "./user_data/freqai_scaler.pkl")
-                logger.info(f"✅ StandardScaler applied & saved for {len(numeric_features)} features.")
 
         return dataframe
 
@@ -144,7 +115,6 @@ class ExampleLSTMStrategy_v1(IStrategy):
         return dataframe
 
     def set_freqai_targets(self, dataframe: DataFrame, metadata: Dict, **kwargs) -> DataFrame:
-
         dataframe['ma'] = ta.SMA(dataframe, timeperiod=10)
         dataframe['roc'] = ta.ROC(dataframe, timeperiod=2)
         dataframe['macd'], dataframe['macdsignal'], dataframe['macdhist'] = ta.MACD(
@@ -160,150 +130,55 @@ class ExampleLSTMStrategy_v1(IStrategy):
         dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
         dataframe['obv'] = ta.OBV(dataframe)
 
-        if self.dynamic_target_weights:    
-            # ✅ Step 1: Select Indicators for Target Calculation (No Prefix)
-            target_input_columns = [
-                "ma", "roc", "macd", "momentum", "rsi",
-                "cci", "stoch", "atr", "obv"
-            ]
+        # ✅ Step 1: Select Indicators for Target Calculation
+        target_input_columns = ["ma", "roc", "macd", "momentum", "rsi", "cci", "stoch", "atr", "obv"]
 
-            # ✅ Step 2: Normalize These Features for Aggregation
-            for feature in target_input_columns:
-                dataframe[f"normalized_{feature}"] = (
-                    dataframe[feature] - dataframe[feature].rolling(14).mean()
-                ) / dataframe[feature].rolling(14).std()
-
-            # ✅ Step 3: Train Ridge Regression to Learn Best Weights
-            X = dataframe[[f"normalized_{feature}" for feature in target_input_columns]].fillna(0)
-            y = dataframe["close"].pct_change().fillna(0)  # Target proxy: price change
-
-            model = Ridge(alpha=1.0)
+        # ✅ Step 2: Load or Train Ridge Regression Model (No Feature Scaling!)
+        ridge_model_path = "./user_data/ridge_model.pkl"
+        try:
+            model = joblib.load(ridge_model_path)
+            logger.info("✅ Loaded pre-trained Ridge model.")
+        except FileNotFoundError:
+            logger.warning("⚠️ Ridge model not found! Retraining...")
+            model = Ridge(alpha=0.1)
+            X = dataframe[target_input_columns].fillna(0)  # ✅ Use raw features, let FreqAI scale them
+            y = dataframe["close"].pct_change().fillna(0)
             model.fit(X, y)
+            joblib.dump(model, ridge_model_path)  # ✅ Save model for future runs
 
-            # Extract & Normalize Weights
-            feature_weights = dict(zip(target_input_columns, model.coef_))
-            total_weight = sum(abs(v) for v in feature_weights.values())
-            normalized_weights = {k: v / total_weight for k, v in feature_weights.items()}
+        # ✅ Step 3: Extract and Normalize Regression Weights
+        feature_weights = dict(zip(target_input_columns, model.coef_))
+        total_weight = sum(abs(v) for v in feature_weights.values()) + 1e-6  # Prevent division by zero
+        normalized_weights = {k: v / total_weight for k, v in feature_weights.items()}
 
-            # ✅ Step 4: Aggregate Features Using Learned Weights
-            dataframe["S"] = sum(
-                dataframe[f"normalized_{feature}"] * weight for feature, weight in normalized_weights.items()
-            )
+        # ✅ Step 4: Aggregate Features Using Learned Weights
+        dataframe["S"] = sum(
+            dataframe[feature] * weight for feature, weight in normalized_weights.items()
+        )
 
-            # ✅ Step 5: Market Regime Filters (No Prefix Needed)
-            dataframe['R'] = 0
-            dataframe.loc[(dataframe['close'] > dataframe['bb_middleband']) & (dataframe['close'] > dataframe['bb_upperband']), 'R'] = 1
-            dataframe.loc[(dataframe['close'] < dataframe['bb_middleband']) & (dataframe['close'] < dataframe['bb_lowerband']), 'R'] = -1
+        # ✅ Step 5: Market Regime Filter (Stable Over Backtests)
+        dataframe['R'] = np.tanh((dataframe['close'] - dataframe['bb_middleband']) / (dataframe['bb_upperband'] - dataframe['bb_lowerband']))
+        dataframe['ma_100'] = ta.SMA(dataframe, timeperiod=100)
+        dataframe['R2'] = np.tanh((dataframe['close'] - dataframe['ma_100']) / (dataframe['ma_100'] + 1e-6))
 
-            dataframe['ma_100'] = ta.SMA(dataframe, timeperiod=100)
-            dataframe['R2'] = np.where(dataframe['close'] > dataframe['ma_100'], 1, -1)
+        # ✅ Step 6: Stable Volatility Adjustments
+        bb_width_baseline = (dataframe['bb_upperband'] - dataframe['bb_lowerband']).expanding().mean()
+        dataframe['V'] = 1 / (bb_width_baseline + 1e-6)
 
-            # ✅ Step 6: Volatility Adjustment
-            bb_width = (dataframe['bb_upperband'] - dataframe['bb_lowerband']) / dataframe['bb_middleband']
-            dataframe['V'] = 1 / bb_width
-            dataframe['V2'] = 1 / dataframe['atr']
+        atr_baseline = dataframe['atr'].expanding().mean()
+        dataframe['V2'] = 1 / (atr_baseline + 1e-6)
 
-            # ✅ Step 7: Compute Final Target Value (`&-target`)
-            dataframe['&-target'] = dataframe["S"] * dataframe['R'] * dataframe['V'] * dataframe['R2'] * dataframe['V2']
+        # ✅ Step 7: Compute Final Target Score (`T`) and Scale It
+        dataframe['T'] = dataframe['S'] * (0.7 * dataframe['R'] + 0.3 * dataframe['R2']) + 0.5 * dataframe['V'] * dataframe['V2']
+        
+        # ✅ Normalize T (Only Scale Target, Not Features!)
+        dataframe['T'] = (dataframe['T'] - dataframe['T'].mean()) / (dataframe['T'].std() + 1e-6)
+        dataframe['T'] = np.clip(dataframe['T'], -1.0, 1.0)  # ✅ Keeps targets within [-1,1]
 
-            logger.info(f"🔍 Learned Target Weights: {normalized_weights}")
-        else:
-            # Step 1: Normalize Indicators:
-            # Why? Normalizing the indicators will make them comparable and allow us to assign weights to them.
-            # How? We will calculate the z-score of each indicator by subtracting the rolling mean and dividing by the
-            # rolling standard deviation. This will give us a normalized value that is centered around 0 with a standard
-            # deviation of 1.
-            dataframe['normalized_stoch'] = (dataframe['stoch'] - dataframe['stoch'].rolling(window=14).mean()) / dataframe[
-                'stoch'].rolling(window=14).std()
-            dataframe['normalized_atr'] = (dataframe['atr'] - dataframe['atr'].rolling(window=14).mean()) / dataframe[
-                'atr'].rolling(window=14).std()
-            dataframe['normalized_obv'] = (dataframe['obv'] - dataframe['obv'].rolling(window=14).mean()) / dataframe[
-                'obv'].rolling(window=14).std()
-            dataframe['normalized_ma'] = (dataframe['close'] - dataframe['close'].rolling(window=10).mean()) / dataframe[
-                'close'].rolling(window=10).std()
-            dataframe['normalized_macd'] = (dataframe['macd'] - dataframe['macd'].rolling(window=26).mean()) / dataframe[
-                'macd'].rolling(window=26).std()
-            dataframe['normalized_roc'] = (dataframe['roc'] - dataframe['roc'].rolling(window=2).mean()) / dataframe[
-                'roc'].rolling(window=2).std()
-            dataframe['normalized_momentum'] = (dataframe['momentum'] - dataframe['momentum'].rolling(window=4).mean()) / \
-                                            dataframe['momentum'].rolling(window=4).std()
-            dataframe['normalized_rsi'] = (dataframe['rsi'] - dataframe['rsi'].rolling(window=10).mean()) / dataframe[
-                'rsi'].rolling(window=10).std()
-            dataframe['normalized_bb_width'] = (dataframe['bb_upperband'] - dataframe['bb_lowerband']).rolling(
-                window=20).mean() / (dataframe['bb_upperband'] - dataframe['bb_lowerband']).rolling(window=20).std()
-            dataframe['normalized_cci'] = (dataframe['cci'] - dataframe['cci'].rolling(window=20).mean()) / dataframe[
-                'cci'].rolling(window=20).std()
+        # ✅ Assign `&-target` for FreqAI
+        dataframe['&-target'] = dataframe['T']
 
-            # Dynamic Weights (Example: Increase the weight of momentum in a strong trend)
-            trend_strength = abs(dataframe['ma'] - dataframe['close'])
-
-            # Calculate the rolling mean and standard deviation of the trend strength to determine a strong trend
-            # The threshold is set to 1.5 times the standard deviation above the mean, but can be adjusted as needed
-            strong_trend_threshold = trend_strength.rolling(window=14).mean() + 1.5 * trend_strength.rolling(
-                window=14).std()
-
-            # Assign a higher weight to momentum if the trend is strong
-            is_strong_trend = trend_strength > strong_trend_threshold
-
-            # Assign the dynamic weights to the dataframe
-            dataframe['w_momentum'] = np.where(is_strong_trend, self.w3.value * 1.5, self.w3.value)
-
-            # Step 2: Calculate aggregate score S
-            w = [self.w0.value, self.w1.value, self.w2.value, self.w3.value, self.w4.value, self.w5.value,
-                self.w6.value, self.w7.value, self.w8.value]
-
-            dataframe['S'] = w[0] * dataframe['normalized_ma'] + w[1] * dataframe['normalized_macd'] + w[2] * dataframe[
-                'normalized_roc'] + w[3] * dataframe['normalized_rsi'] + w[4] * \
-                            dataframe['normalized_bb_width'] + w[5] * dataframe['normalized_cci'] + dataframe[
-                                'w_momentum'] * dataframe['normalized_momentum'] + self.w8.value * dataframe[
-                                'normalized_stoch'] + self.w7.value * dataframe['normalized_atr'] + self.w6.value * \
-                            dataframe['normalized_obv']
-
-            # Step 3: Market Regime Filter R
-            # EXPLANATION: If the price is above the upper Bollinger Band, assign a value
-            # of 1 to R. If the price is below the lower Bollinger Band, assign a value of -1 to R. Otherwise,
-            # the value R stays 0.
-            # What's basically happening here is that we are assigning a value of 1 to R when
-            # the price is in the upper band, -1 when the price is in the lower band, and 0 when the price is in the
-            # middle band. This is a simple way to determine the market regime based on Bollinger Bands. What is market
-            # regime? Market regime is the state of the market. It can be trending, ranging, or reversing. So we are
-            # using Bollinger Bands to determine the market regime. You can use other indicators to determine the market
-            # regime as well. For example, you can use moving averages, RSI, MACD, etc.
-            dataframe['R'] = 0
-            dataframe.loc[(dataframe['close'] > dataframe['bb_middleband']) & (
-                    dataframe['close'] > dataframe['bb_upperband']), 'R'] = 1
-            dataframe.loc[(dataframe['close'] < dataframe['bb_middleband']) & (
-                    dataframe['close'] < dataframe['bb_lowerband']), 'R'] = -1
-
-            # Additional Market Regime Filter based on long-term MA
-            dataframe['ma_100'] = ta.SMA(dataframe, timeperiod=100)
-            dataframe['R2'] = np.where(dataframe['close'] > dataframe['ma_100'], 1, -1)
-
-            # Step 4: Volatility Adjustment V
-            # EXPLANATION: Calculate the Bollinger Band width and assign it to V. The Bollinger Band width is the
-            # difference between the upper and lower Bollinger Bands divided by the middle Bollinger Band. The idea is
-            # that when the Bollinger Bands are wide, the market is volatile, and when the Bollinger Bands are narrow,
-            # the market is less volatile. So we are using the Bollinger Band width as a measure of volatility. You can
-            # use other indicators to measure volatility as well. For example, you can use the ATR (Average True Range)
-            bb_width = (dataframe['bb_upperband'] - dataframe['bb_lowerband']) / dataframe['bb_middleband']
-            dataframe['V'] = 1 / bb_width  # example, assuming V is inversely proportional to BB width
-
-            # Another Volatility Adjustment using ATR
-            dataframe['V2'] = 1 / dataframe['atr']
-
-            # Get Final Target Score to incorporate new calculations
-            dataframe['T'] = dataframe['S'] * dataframe['R'] * dataframe['V'] * dataframe['R2'] * dataframe['V2']
-
-            # Assign the target score T to the AI target column
-            dataframe['&-target'] = dataframe['T']
-
-        if self.do_normalize:
-            # ✅ Normalize Targets (`&-`) Using Rolling Mean & Std
-            target_columns = [col for col in dataframe.columns if col.startswith("&-") and dataframe[col].dtype in [np.float64, np.int64]]
-            if target_columns:
-                for target in target_columns:
-                    dataframe[target] = (dataframe[target] - dataframe[target].rolling(50).mean()) / dataframe[target].rolling(50).std()
-                logger.info(f"✅ Rolling Mean & Std Normalization Applied for {len(target_columns)} Targets")
+        logger.info(f"🔍 Learned Target Weights: {normalized_weights}")
 
         return dataframe
 
@@ -311,32 +186,20 @@ class ExampleLSTMStrategy_v1(IStrategy):
 
         self.freqai_info = self.config["freqai"]
 
-        if self.do_normalize:
-            # ✅ Load saved scaler for feature normalization in live predictions
-            try:
-                saved_data = joblib.load("./user_data/freqai_scaler.pkl")
-                scaler, trained_features = saved_data["scaler"], saved_data["features"]
-
-                for f in trained_features:
-                    if f not in dataframe.columns:
-                        dataframe[f] = 0  # Fill missing features with zero
-
-                dataframe[trained_features] = scaler.transform(dataframe[trained_features])
-                logger.info("✅ Applied StandardScaler to live feature data.")
-
-            except FileNotFoundError:
-                logger.warning("⚠️ Scaler file not found! Model may behave inconsistently.")
+        dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
+        # ✅ Apply a single ATR-based stoploss for both long and short trades
+        dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)  # 1.75x ATR
 
         dataframe = self.freqai.start(dataframe, metadata, self)
 
         # ✅ Adjust DI_threshold after FreqAI processes the data
-        if self.freqai_info["feature_parameters"]["DI_threshold"] == 1.0:  # If using default value
-            asset_volatility = dataframe["close"].pct_change().rolling(50).std().mean()
-            di_base = 3.0  # Default DI_threshold when volatility is low
-            di_threshold = di_base / (1 + asset_volatility * 5)  # Inverse scaling
-            self.freqai_info["feature_parameters"]["DI_threshold"] = di_threshold  
-            logger.info(f"🔍 Applied Dynamic DI_threshold for {metadata['pair']}: {di_threshold:.2f}")
-        logger.info(f"🔍 [DEBUG] Current DI_threshold for {metadata['pair']}: {self.freqai_info['feature_parameters']['DI_threshold']}")
+        # if self.freqai_info["feature_parameters"]["DI_threshold"] == 1.0:  # If using default value
+        #     asset_volatility = dataframe["close"].pct_change().rolling(50).std().mean()
+        #     di_base = 3.0  # Default DI_threshold when volatility is low
+        #     di_threshold = di_base / (1 + asset_volatility * 5)  # Inverse scaling
+        #     self.freqai_info["feature_parameters"]["DI_threshold"] = di_threshold  
+        #     logger.info(f"🔍 Applied Dynamic DI_threshold for {metadata['pair']}: {di_threshold:.2f}")
+        # logger.info(f"🔍 [DEBUG] Current DI_threshold for {metadata['pair']}: {self.freqai_info['feature_parameters']['DI_threshold']}")
 
         self.compute_prediction_metrics(dataframe, metadata)
         self.save_prediction_metrics()
@@ -344,20 +207,28 @@ class ExampleLSTMStrategy_v1(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_factor = df["prediction_confidence"]
+        confidence_threshold = 0.8  # Minimum confidence required to enter trades
 
+        # ✅ Compute dynamic thresholds based on rolling percentiles of `&-target_mean`
+        long_threshold = df["&-target_mean"].rolling(100).quantile(0.75)  # Top 25% of predictions
+        short_threshold = df["&-target_mean"].rolling(100).quantile(0.25)  # Bottom 25% of predictions
+
+        # ✅ Conditions for entering long and short trades
         enter_long_conditions = [
             df["do_predict"] == 1,
-            df["&-target"] > (df["&-target_mean"] * confidence_factor),  # Dynamic threshold
+            df["&-target_mean"] > long_threshold,  # ✅ Use the model's actual prediction
+            df["prediction_confidence"] > confidence_threshold,  # ✅ Require strong confidence
             df["volume"] > 0
         ]
 
         enter_short_conditions = [
             df["do_predict"] == 1,
-            df["&-target"] < (df["&-target_mean"] * confidence_factor),
+            df["&-target_mean"] < short_threshold,  # ✅ Use the model's actual prediction
+            df["prediction_confidence"] > confidence_threshold,
             df["volume"] > 0
         ]
 
+        # ✅ Apply entry conditions
         df.loc[
             reduce(lambda x, y: x & y, enter_long_conditions), ["enter_long", "enter_tag"]
         ] = (1, "long")
@@ -369,32 +240,60 @@ class ExampleLSTMStrategy_v1(IStrategy):
         return df
 
     def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.85  # Adjust dynamically
+        confidence_threshold = 0.75  # Allow slightly lower confidence for exits
 
-        exit_long_conditions = [
-            df["do_predict"] == 1,
-            df["&-target"] < df["&-target_mean"],  # Model predicts reversal
-            df["prediction_confidence"] > confidence_threshold,  # High confidence in reversal
-        ]
+        # ✅ Compute dynamic mid-range threshold for exits
+        exit_threshold = df["&-target_mean"].rolling(100).median()  # ✅ Use median of predictions
 
-        exit_short_conditions = [
+        # ✅ Strong Exit: If the prediction moves back to neutral
+        strong_exit_long_conditions = [
             df["do_predict"] == 1,
-            df["&-target"] > df["&-target_mean"],
+            df["&-target_mean"] < exit_threshold,  # ✅ Exit long if prediction weakens
             df["prediction_confidence"] > confidence_threshold,
         ]
 
-        if exit_long_conditions:
-            df.loc[
-                reduce(lambda x, y: x & y, exit_long_conditions), ["exit_long", "exit_tag"]
-            ] = (1, "exit_long")
+        strong_exit_short_conditions = [
+            df["do_predict"] == 1,
+            df["&-target_mean"] > exit_threshold,  # ✅ Exit short if prediction weakens
+            df["prediction_confidence"] > confidence_threshold,
+        ]
 
-        if exit_short_conditions:
-            df.loc[
-                reduce(lambda x, y: x & y, exit_short_conditions), ["exit_short", "exit_tag"]
-            ] = (1, "exit_short")
+        # ✅ Apply Strong Exits
+        df.loc[
+            reduce(lambda x, y: x & y, strong_exit_long_conditions), ["exit_long", "exit_tag"]
+        ] = (1, "strong_exit_long")
+
+        df.loc[
+            reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]
+        ] = (1, "strong_exit_short")
 
         return df
-    
+
+    def custom_stoploss(self, pair, trade, current_time, current_rate, current_profit, **kwargs) -> float:
+        # ✅ Fetch the latest DataFrame for the given pair and timeframe
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+
+        # ✅ Ensure 'atr' exists in the DataFrame
+        if 'atr' not in dataframe.columns:
+            logger.warning(f"⚠️ ATR indicator missing for {pair}. Returning default stoploss.")
+            return -0.05  # Default stoploss in case ATR is missing
+
+        # ✅ Get the latest ATR value
+        atr_value = dataframe.iloc[-1]['atr']
+
+        # ✅ Calculate dynamic stoploss based on ATR
+        atr_multiplier = 0.5  # Adjust if needed
+        if trade.is_short:
+            stoploss_value = current_rate + (atr_value * atr_multiplier)  # Stoploss above price for shorts
+        else:
+            stoploss_value = current_rate - (atr_value * atr_multiplier)  # Stoploss below price for longs
+        
+        # logger.info(f"🛑 Stoploss Debug | Pair: {pair} | ATR: {atr_value:.5f} | Stoploss: {stoploss_value:.5f} | Entry: {trade.open_rate:.5f}")
+
+        return max(stoploss_value, trade.stop_loss)  # Ensures stoploss only tightens
+
+
+
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float, time_in_force: str, 
                         current_time, entry_tag, side: str, **kwargs) -> bool:
 
@@ -416,6 +315,8 @@ class ExampleLSTMStrategy_v1(IStrategy):
         """
         prediction_col = target_col + "_mean"
 
+        logger.info(f"🔍 `&-target_std` mean: {dataframe['&-target_std'].mean()}, min: {dataframe['&-target_std'].min()}, max: {dataframe['&-target_std'].max()}")
+        
         # Ensure required columns exist
         if prediction_col not in dataframe.columns:
             logger.warning(f"❌ Column '{prediction_col}' not found in dataframe. Skipping prediction metrics.")
@@ -448,7 +349,8 @@ class ExampleLSTMStrategy_v1(IStrategy):
             dataframe["avg_confidence_correct"] = np.nan
 
         # ✅ Step 5: Calculate Fraction of Predicted Targets
-        total_predictions = dataframe["do_predict"].sum()
+        total_predictions = (dataframe["do_predict"] == 1).sum()
+        logger.info(f"🔍 `do_predict=1` Count: {total_predictions}, `do_predict=-1` Count: {(dataframe['do_predict'] == -1).sum()}")
         total_targets_available = dataframe[target_col].notna().sum()
         fraction_predicted = total_predictions / total_targets_available if total_targets_available > 0 else 0
 
@@ -486,3 +388,20 @@ class ExampleLSTMStrategy_v1(IStrategy):
         df.to_csv(output_path, index=False)
 
         logger.info(f"✅ Prediction metrics saved to {output_path}")
+
+    def remove_highly_correlated_features(self, dataframe, threshold=0.85):
+        """
+        Drops one feature from each highly correlated pair, except essential features.
+        """
+        essential_features = {"high", "low", "close", "open", "volume"}  # Features FreqAI depends on
+
+        corr_matrix = dataframe.corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+
+        to_drop = [column for column in upper.columns if any(upper[column] > threshold) and column not in essential_features]
+
+        if to_drop:
+            logger.info(f"Dropping {len(to_drop)} highly correlated features: {to_drop}")
+            dataframe = dataframe.drop(columns=to_drop)
+
+        return dataframe        
