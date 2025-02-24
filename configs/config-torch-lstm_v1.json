@@ -56,16 +56,16 @@
       "rateLimit": 50
     },
     "pair_whitelist": [
-      "BTC/USDT:USDT",
-      "ETH/USDT:USDT",
-      "LTC/USDT:USDT",
-      "BNB/USDT:USDT",
-      "XRP/USDT:USDT",
-      "ADA/USDT:USDT",
-      "DOT/USDT:USDT",
-      "SOL/USDT:USDT",
-      "LINK/USDT:USDT",
-      "AVAX/USDT:USDT"
+      "BTC/USDT:USDT"
+      // "ETH/USDT:USDT",
+      // "LTC/USDT:USDT",
+      // "BNB/USDT:USDT",
+      // "XRP/USDT:USDT",
+      // "ADA/USDT:USDT",
+      // "DOT/USDT:USDT",
+      // "SOL/USDT:USDT",
+      // "LINK/USDT:USDT",
+      // "AVAX/USDT:USDT"
     ],
     "pair_blacklist": []
   },
@@ -83,8 +83,10 @@
     "enabled": true,
     "identifier": "torch-lstm12",
     "train_period_days": 240,
-    "fit_live_predictions_candles": 24,
-    "backtest_period_days": 30,
+    "fit_live_predictions_candles": 0,
+    "force_model_refresh": false,
+    "model_persistence": true,
+    "backtest_period_days": 60,
     "expiration_hours": 4,
     "live_retrain_hours": 4,
     "purge_old_models": 2,
@@ -106,6 +108,7 @@
       "DI_threshold": 2.0,
       "weight_factor": 0.5,
       "principal_component_analysis": true,
+      // "num_pca_components": 20,
       "use_SVM_to_remove_outliers": true,      
       "indicator_periods_candles": [
         10,
@@ -125,7 +128,7 @@
     "model_training_parameters": {
       "learning_rate": 1e-3,
       "use_gpu": true,  // Set to "false" to disable GPU
-      "enable_feature_importance": true, // Set to "false" to disable feature importance calculation(takes time!)
+      "enable_feature_importance": false, // Set to "false" to disable feature importance calculation(takes time!)
       "enable_early_stopping": true,
       "trainer_kwargs": {
         "batch_size": 64,

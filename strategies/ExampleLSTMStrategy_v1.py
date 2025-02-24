@@ -30,8 +30,8 @@ class ExampleLSTMStrategy_v1(IStrategy):
         "main_plot": {},
         "subplots": {
             "predictions": {  
-                "&-target_mean": {"color": "blue", "plot_type": "line"},  # Model's expected target
-                "&-target": {"color": "brown", "plot_type": "line"},  # Actual target values
+                "T": {"color": "blue", "plot_type": "line"},  # Model's Label
+                "&-s_target": {"color": "brown", "plot_type": "line"},  # Model's prediction
                 "do_predict": {"color": "black", "plot_type": "scatter"},  # Show predictions as dots
             },
         },
@@ -115,6 +115,102 @@ class ExampleLSTMStrategy_v1(IStrategy):
         return dataframe
 
     def set_freqai_targets(self, dataframe: DataFrame, metadata: Dict, **kwargs) -> DataFrame:
+
+        # ✅ Assign `&-s_target` for FreqAI
+        dataframe['&-s_target'] = self.create_target_T(dataframe)
+
+        return dataframe
+
+    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+
+        self.freqai_info = self.config["freqai"]
+
+        dataframe['T'] = self.create_target_T(dataframe)
+        dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
+        # ✅ Apply a single ATR-based stoploss for both long and short trades
+        dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)  # 1.75x ATR
+
+        logger.info(f"🔍 [DEBUG] Calling freqai.start() for {metadata['pair']}")
+        dataframe = self.freqai.start(dataframe, metadata, self)
+
+        # ✅ Adjust DI_threshold after FreqAI processes the data
+        # if self.freqai_info["feature_parameters"]["DI_threshold"] == 1.0:  # If using default value
+        #     asset_volatility = dataframe["close"].pct_change().rolling(50).std().mean()
+        #     di_base = 3.0  # Default DI_threshold when volatility is low
+        #     di_threshold = di_base / (1 + asset_volatility * 5)  # Inverse scaling
+        #     self.freqai_info["feature_parameters"]["DI_threshold"] = di_threshold  
+        #     logger.info(f"🔍 Applied Dynamic DI_threshold for {metadata['pair']}: {di_threshold:.2f}")
+        # logger.info(f"🔍 [DEBUG] Current DI_threshold for {metadata['pair']}: {self.freqai_info['feature_parameters']['DI_threshold']}")
+
+        self.compute_prediction_metrics(dataframe, metadata)
+        self.save_prediction_metrics()
+        
+        return dataframe
+
+    def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
+        confidence_threshold = 0.8  # Minimum confidence required to enter trades
+
+        # ✅ Compute dynamic thresholds based on rolling percentiles of `&-s_target`
+        long_threshold = df["&-s_target"].rolling(100).quantile(0.75)  # Top 25% of predictions
+        short_threshold = df["&-s_target"].rolling(100).quantile(0.25)  # Bottom 25% of predictions
+
+        # ✅ Conditions for entering long and short trades
+        enter_long_conditions = [
+            df["do_predict"] == 1,
+            df["&-s_target"] > long_threshold,  # ✅ Use the model's actual prediction
+            df["prediction_confidence"] > confidence_threshold,  # ✅ Require strong confidence
+            df["volume"] > 0
+        ]
+
+        enter_short_conditions = [
+            df["do_predict"] == 1,
+            df["&-s_target"] < short_threshold,  # ✅ Use the model's actual prediction
+            df["prediction_confidence"] > confidence_threshold,
+            df["volume"] > 0
+        ]
+
+        # ✅ Apply entry conditions
+        df.loc[
+            reduce(lambda x, y: x & y, enter_long_conditions), ["enter_long", "enter_tag"]
+        ] = (1, "long")
+
+        df.loc[
+            reduce(lambda x, y: x & y, enter_short_conditions), ["enter_short", "enter_tag"]
+        ] = (1, "short")
+
+        return df
+
+    def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
+        confidence_threshold = 0.75  # Allow slightly lower confidence for exits
+
+        # ✅ Compute dynamic mid-range threshold for exits
+        exit_threshold = df["&-s_target"].rolling(100).median()  # ✅ Use median of predictions
+
+        # ✅ Strong Exit: If the prediction moves back to neutral
+        strong_exit_long_conditions = [
+            df["do_predict"] == 1,
+            df["&-s_target"] < exit_threshold,  # ✅ Exit long if prediction weakens
+            df["prediction_confidence"] > confidence_threshold,
+        ]
+
+        strong_exit_short_conditions = [
+            df["do_predict"] == 1,
+            df["&-s_target"] > exit_threshold,  # ✅ Exit short if prediction weakens
+            df["prediction_confidence"] > confidence_threshold,
+        ]
+
+        # ✅ Apply Strong Exits
+        df.loc[
+            reduce(lambda x, y: x & y, strong_exit_long_conditions), ["exit_long", "exit_tag"]
+        ] = (1, "strong_exit_long")
+
+        df.loc[
+            reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]
+        ] = (1, "strong_exit_short")
+
+        return df
+
+    def create_target_T(self, dataframe: DataFrame):
         dataframe['ma'] = ta.SMA(dataframe, timeperiod=10)
         dataframe['roc'] = ta.ROC(dataframe, timeperiod=2)
         dataframe['macd'], dataframe['macdsignal'], dataframe['macdhist'] = ta.MACD(
@@ -174,101 +270,10 @@ class ExampleLSTMStrategy_v1(IStrategy):
         # ✅ Normalize T (Only Scale Target, Not Features!)
         dataframe['T'] = (dataframe['T'] - dataframe['T'].mean()) / (dataframe['T'].std() + 1e-6)
         dataframe['T'] = np.clip(dataframe['T'], -1.0, 1.0)  # ✅ Keeps targets within [-1,1]
-
-        # ✅ Assign `&-target` for FreqAI
-        dataframe['&-target'] = dataframe['T']
-
         logger.info(f"🔍 Learned Target Weights: {normalized_weights}")
 
-        return dataframe
-
-    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-
-        self.freqai_info = self.config["freqai"]
-
-        dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
-        # ✅ Apply a single ATR-based stoploss for both long and short trades
-        dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)  # 1.75x ATR
-
-        dataframe = self.freqai.start(dataframe, metadata, self)
-
-        # ✅ Adjust DI_threshold after FreqAI processes the data
-        # if self.freqai_info["feature_parameters"]["DI_threshold"] == 1.0:  # If using default value
-        #     asset_volatility = dataframe["close"].pct_change().rolling(50).std().mean()
-        #     di_base = 3.0  # Default DI_threshold when volatility is low
-        #     di_threshold = di_base / (1 + asset_volatility * 5)  # Inverse scaling
-        #     self.freqai_info["feature_parameters"]["DI_threshold"] = di_threshold  
-        #     logger.info(f"🔍 Applied Dynamic DI_threshold for {metadata['pair']}: {di_threshold:.2f}")
-        # logger.info(f"🔍 [DEBUG] Current DI_threshold for {metadata['pair']}: {self.freqai_info['feature_parameters']['DI_threshold']}")
-
-        self.compute_prediction_metrics(dataframe, metadata)
-        self.save_prediction_metrics()
-        
-        return dataframe
-
-    def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.8  # Minimum confidence required to enter trades
-
-        # ✅ Compute dynamic thresholds based on rolling percentiles of `&-target_mean`
-        long_threshold = df["&-target_mean"].rolling(100).quantile(0.75)  # Top 25% of predictions
-        short_threshold = df["&-target_mean"].rolling(100).quantile(0.25)  # Bottom 25% of predictions
-
-        # ✅ Conditions for entering long and short trades
-        enter_long_conditions = [
-            df["do_predict"] == 1,
-            df["&-target_mean"] > long_threshold,  # ✅ Use the model's actual prediction
-            df["prediction_confidence"] > confidence_threshold,  # ✅ Require strong confidence
-            df["volume"] > 0
-        ]
-
-        enter_short_conditions = [
-            df["do_predict"] == 1,
-            df["&-target_mean"] < short_threshold,  # ✅ Use the model's actual prediction
-            df["prediction_confidence"] > confidence_threshold,
-            df["volume"] > 0
-        ]
-
-        # ✅ Apply entry conditions
-        df.loc[
-            reduce(lambda x, y: x & y, enter_long_conditions), ["enter_long", "enter_tag"]
-        ] = (1, "long")
-
-        df.loc[
-            reduce(lambda x, y: x & y, enter_short_conditions), ["enter_short", "enter_tag"]
-        ] = (1, "short")
-
-        return df
-
-    def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.75  # Allow slightly lower confidence for exits
-
-        # ✅ Compute dynamic mid-range threshold for exits
-        exit_threshold = df["&-target_mean"].rolling(100).median()  # ✅ Use median of predictions
-
-        # ✅ Strong Exit: If the prediction moves back to neutral
-        strong_exit_long_conditions = [
-            df["do_predict"] == 1,
-            df["&-target_mean"] < exit_threshold,  # ✅ Exit long if prediction weakens
-            df["prediction_confidence"] > confidence_threshold,
-        ]
-
-        strong_exit_short_conditions = [
-            df["do_predict"] == 1,
-            df["&-target_mean"] > exit_threshold,  # ✅ Exit short if prediction weakens
-            df["prediction_confidence"] > confidence_threshold,
-        ]
-
-        # ✅ Apply Strong Exits
-        df.loc[
-            reduce(lambda x, y: x & y, strong_exit_long_conditions), ["exit_long", "exit_tag"]
-        ] = (1, "strong_exit_long")
-
-        df.loc[
-            reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]
-        ] = (1, "strong_exit_short")
-
-        return df
-
+        return dataframe['T']
+    
     def custom_stoploss(self, pair, trade, current_time, current_rate, current_profit, **kwargs) -> float:
         # ✅ Fetch the latest DataFrame for the given pair and timeframe
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
@@ -282,7 +287,8 @@ class ExampleLSTMStrategy_v1(IStrategy):
         atr_value = dataframe.iloc[-1]['atr']
 
         # ✅ Calculate dynamic stoploss based on ATR
-        atr_multiplier = 0.5  # Adjust if needed
+        atr_std = dataframe['atr'].rolling(100).std().iloc[-1]  # ✅ Extract latest value
+        atr_multiplier = 0.5 + (atr_std * 0.1)  # ✅ Now it's a single float value
         if trade.is_short:
             stoploss_value = current_rate + (atr_value * atr_multiplier)  # Stoploss above price for shorts
         else:
@@ -308,31 +314,35 @@ class ExampleLSTMStrategy_v1(IStrategy):
         return super().confirm_trade_entry(pair, order_type, adjusted_size, rate, time_in_force, 
                                         current_time, entry_tag, side, **kwargs)
 
-    def compute_prediction_metrics(self, dataframe: pd.DataFrame, metadata: dict, target_col: str = "&-target"): 
+    def compute_prediction_metrics(self, dataframe: pd.DataFrame, metadata: dict, label_col: str= "T", prediction_col: str = "&-s_target") -> pd.DataFrame: 
         """
         Computes and stores prediction accuracy metrics for all trading pairs.
         Saves the results to a CSV file after backtesting.
         """
-        prediction_col = target_col + "_mean"
+        prediction_mean = prediction_col + "_mean"
+        prediction_std = prediction_col + "_std"
 
-        logger.info(f"🔍 `&-target_std` mean: {dataframe['&-target_std'].mean()}, min: {dataframe['&-target_std'].min()}, max: {dataframe['&-target_std'].max()}")
-        
+        logger.info(f"🔍 {label_col} mean: {dataframe[label_col].mean()}, min: {dataframe[label_col].min()}, max: {dataframe[label_col].max()}")
+        logger.info(f"🔍 {prediction_col} mean: {dataframe[prediction_col].mean()}, min: {dataframe[prediction_col].min()}, max: {dataframe[prediction_col].max()}")
+        logger.info(f"🔍 {prediction_mean} mean: {dataframe[prediction_mean].mean()}, min: {dataframe[prediction_mean].min()}, max: {dataframe[prediction_mean].max()}")
+        logger.info(f"🔍 {prediction_std} mean: {dataframe[prediction_std].mean()}, min: {dataframe[prediction_std].min()}, max: {dataframe[prediction_std].max()}")
+
         # Ensure required columns exist
         if prediction_col not in dataframe.columns:
             logger.warning(f"❌ Column '{prediction_col}' not found in dataframe. Skipping prediction metrics.")
             return dataframe
 
         # ✅ Step 1: Directional Accuracy (Sign Match)
-        dataframe["prediction_correct"] = (np.sign(dataframe[target_col]) == np.sign(dataframe[prediction_col])).astype(int)
+        dataframe["prediction_correct"] = (np.sign(dataframe[label_col]) == np.sign(dataframe[prediction_col])).astype(int)
 
         # ✅ Step 2: Rolling Accuracy (Last 50 candles)
         dataframe["rolling_accuracy"] = dataframe["prediction_correct"].rolling(50, min_periods=1).mean()
 
         # ✅ Step 3: Mean Absolute Error (MAE)
-        dataframe["mae"] = np.abs(dataframe[target_col] - dataframe[prediction_col]).rolling(100, min_periods=1).mean()
+        dataframe["mae"] = np.abs(dataframe[label_col] - dataframe[prediction_col]).rolling(100, min_periods=1).mean()
 
         # ✅ Step 4: Prediction Confidence (Normalized by Standard Deviation)
-        std_col = target_col + "_std"
+        std_col = prediction_std
         if std_col in dataframe.columns:
             dataframe["prediction_confidence"] = (np.abs(dataframe[prediction_col]) / (dataframe[std_col] + 1e-6)).clip(0, 1)
 
@@ -351,7 +361,7 @@ class ExampleLSTMStrategy_v1(IStrategy):
         # ✅ Step 5: Calculate Fraction of Predicted Targets
         total_predictions = (dataframe["do_predict"] == 1).sum()
         logger.info(f"🔍 `do_predict=1` Count: {total_predictions}, `do_predict=-1` Count: {(dataframe['do_predict'] == -1).sum()}")
-        total_targets_available = dataframe[target_col].notna().sum()
+        total_targets_available = dataframe[label_col].notna().sum()
         fraction_predicted = total_predictions / total_targets_available if total_targets_available > 0 else 0
 
         # ✅ Step 6: Store Metrics in Class-Level List
@@ -363,7 +373,7 @@ class ExampleLSTMStrategy_v1(IStrategy):
             "rolling_accuracy": dataframe["rolling_accuracy"].iloc[-1],
             "mae": dataframe["mae"].iloc[-1],
             "avg_confidence_correct": dataframe["avg_confidence_correct"].iloc[-1] if "avg_confidence_correct" in dataframe.columns else np.nan,
-            "correlation": dataframe[target_col].corr(dataframe[prediction_col])  # ✅ Step 8: Correlation between Target and Predictions
+            "correlation": dataframe[prediction_col].corr(dataframe[label_col])  # ✅ Step 8: Correlation between Target and Predictions
         }
         self.prediction_metrics_storage.append(metrics)
 
