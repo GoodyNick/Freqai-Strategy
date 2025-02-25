@@ -3,16 +3,14 @@
   "margin_mode": "isolated",
   "max_open_trades": -1,
   "stake_currency": "USDT",
-  "stake_amount": 2000,
+  "stake_amount": 100,
   "tradable_balance_ratio": 0.99,
   "fiat_display_currency": "USD",
   "dry_run": true,
-  // "strategy": "ExampleLSTMStrategy",
-  // "freqaimodel": "PyTorchLSTMRegressor",
   "dataformat_ohlcv": "json",
   "dataformat_trades": "jsongz",
   "cancel_open_orders_on_exit": false,
-  "dry_run_wallet": 8000,
+  "dry_run_wallet": 1000,
   "unfilledtimeout": {
     "entry": 10,
     "exit": 30
@@ -56,7 +54,7 @@
       "rateLimit": 50
     },
     "pair_whitelist": [
-      "BTC/USDT:USDT"
+      "BTC/USDT:USDT",
       // "ETH/USDT:USDT",
       // "LTC/USDT:USDT",
       // "BNB/USDT:USDT",
@@ -107,8 +105,8 @@
       "include_shifted_candidates": 12,
       "DI_threshold": 2.0,
       "weight_factor": 0.5,
-      "principal_component_analysis": true,
-      // "num_pca_components": 20,
+      "principal_component_analysis": false,
+      "num_pca_components": 20,
       "use_SVM_to_remove_outliers": true,      
       "indicator_periods_candles": [
         10,
@@ -126,21 +124,23 @@
       "shuffle": false
     },
     "model_training_parameters": {
-      "learning_rate": 1e-3,
-      "use_gpu": true,  // Set to "false" to disable GPU
-      "enable_feature_importance": false, // Set to "false" to disable feature importance calculation(takes time!)
-      "enable_early_stopping": true,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "num_epochs": 50,
+      "use_gpu": true,
+      "enable_feature_importance": true,
+      "enable_early_stopping": false,
       "trainer_kwargs": {
         "batch_size": 64,
-        "n_epochs": 30
+        "n_epochs": 50
+        }
       },
       "model_kwargs": {
-        "num_lstm_layers": 3,
-        "hidden_dim": 128,
-        "dropout_percent": 0.0,  // ✅ Disable dropout during backtests(default: 0.4)
-        "window_size": 5
+        "num_lstm_layers": 5,
+        "hidden_dim": 384,
+        "dropout_percent": 0.10,
+        "window_size": 80
       }
-    }
   },
   "api_server": {
     "enabled": true,
@@ -153,6 +153,5 @@
     "username": "Freqtrader",
     "password": "3D$m@x23",
     "ws_token": "sercet_Ws_t0ken"
-}
-  //telegram and api
+  }
 }

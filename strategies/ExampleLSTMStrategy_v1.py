@@ -8,6 +8,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import talib.abstract as ta
+from technical import qtpylib
+
 from pandas import DataFrame
 from technical import qtpylib
 from sklearn.preprocessing import StandardScaler
@@ -31,8 +33,9 @@ class ExampleLSTMStrategy_v1(IStrategy):
         "subplots": {
             "predictions": {  
                 "T": {"color": "blue", "plot_type": "line"},  # Model's Label
-                "&-s_target": {"color": "brown", "plot_type": "line"},  # Model's prediction
-                "do_predict": {"color": "black", "plot_type": "scatter"},  # Show predictions as dots
+                "&-s_target": {"color": "red", "plot_type": "line"},  # Model's prediction
+                "&-s_target_mean": {"color": "green", "plot_type": "line"},  # Model's prediction, average
+                # "do_predict": {"color": "black", "plot_type": "scatter"},  # Show predictions as dots
             },
         },
     }
@@ -130,7 +133,7 @@ class ExampleLSTMStrategy_v1(IStrategy):
         # ✅ Apply a single ATR-based stoploss for both long and short trades
         dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)  # 1.75x ATR
 
-        logger.info(f"🔍 [DEBUG] Calling freqai.start() for {metadata['pair']}")
+        # logger.info(f"🔍 [DEBUG] Calling freqai.start() for {metadata['pair']}")
         dataframe = self.freqai.start(dataframe, metadata, self)
 
         # ✅ Adjust DI_threshold after FreqAI processes the data
@@ -150,154 +153,108 @@ class ExampleLSTMStrategy_v1(IStrategy):
     def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
         confidence_threshold = 0.8  # Minimum confidence required to enter trades
 
-        # ✅ Compute dynamic thresholds based on rolling percentiles of `&-s_target`
-        long_threshold = df["&-s_target"].rolling(100).quantile(0.75)  # Top 25% of predictions
-        short_threshold = df["&-s_target"].rolling(100).quantile(0.25)  # Bottom 25% of predictions
+        # ✅ Compute dynamic thresholds using rolling statistics of the prediction (`&-s_target`)
+        prediction_mean = df["&-s_target"].rolling(100).mean()
+        prediction_std = df["&-s_target"].rolling(100).std()
 
-        # ✅ Conditions for entering long and short trades
+        long_threshold = prediction_mean + 0.5 * prediction_std  # ✅ Dynamic long threshold
+        short_threshold = prediction_mean - 0.5 * prediction_std  # ✅ Dynamic short threshold
+
+        # ✅ Use crossover conditions for trade triggers
         enter_long_conditions = [
             df["do_predict"] == 1,
-            df["&-s_target"] > long_threshold,  # ✅ Use the model's actual prediction
-            df["prediction_confidence"] > confidence_threshold,  # ✅ Require strong confidence
+            qtpylib.crossed_above(df["&-s_target"], long_threshold),  # ✅ Long trigger using crossover
+            df["prediction_confidence"] > confidence_threshold,
             df["volume"] > 0
         ]
 
         enter_short_conditions = [
             df["do_predict"] == 1,
-            df["&-s_target"] < short_threshold,  # ✅ Use the model's actual prediction
+            qtpylib.crossed_below(df["&-s_target"], short_threshold),  # ✅ Short trigger using crossover
             df["prediction_confidence"] > confidence_threshold,
             df["volume"] > 0
         ]
 
         # ✅ Apply entry conditions
-        df.loc[
-            reduce(lambda x, y: x & y, enter_long_conditions), ["enter_long", "enter_tag"]
-        ] = (1, "long")
-
-        df.loc[
-            reduce(lambda x, y: x & y, enter_short_conditions), ["enter_short", "enter_tag"]
-        ] = (1, "short")
+        df.loc[reduce(lambda x, y: x & y, enter_long_conditions), ["enter_long", "enter_tag"]] = (1, "long")
+        df.loc[reduce(lambda x, y: x & y, enter_short_conditions), ["enter_short", "enter_tag"]] = (1, "short")
 
         return df
 
     def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.75  # Allow slightly lower confidence for exits
+        confidence_threshold = 0.85  # Slightly higher confidence for exits
 
-        # ✅ Compute dynamic mid-range threshold for exits
-        exit_threshold = df["&-s_target"].rolling(100).median()  # ✅ Use median of predictions
+        # ✅ Compute adaptive exit threshold based on rolling median of predictions (`&-s_target`)
+        exit_threshold = df["&-s_target"].rolling(100).median()
 
-        # ✅ Strong Exit: If the prediction moves back to neutral
+        # ✅ Use crossovers instead of static comparisons
         strong_exit_long_conditions = [
             df["do_predict"] == 1,
-            df["&-s_target"] < exit_threshold,  # ✅ Exit long if prediction weakens
-            df["prediction_confidence"] > confidence_threshold,
+            qtpylib.crossed_below(df["&-s_target"], exit_threshold),  # ✅ Exit long only on crossover
+            df["prediction_confidence"] > confidence_threshold
         ]
 
         strong_exit_short_conditions = [
             df["do_predict"] == 1,
-            df["&-s_target"] > exit_threshold,  # ✅ Exit short if prediction weakens
-            df["prediction_confidence"] > confidence_threshold,
+            qtpylib.crossed_above(df["&-s_target"], exit_threshold),  # ✅ Exit short only on crossover
+            df["prediction_confidence"] > confidence_threshold
         ]
 
-        # ✅ Apply Strong Exits
-        df.loc[
-            reduce(lambda x, y: x & y, strong_exit_long_conditions), ["exit_long", "exit_tag"]
-        ] = (1, "strong_exit_long")
-
-        df.loc[
-            reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]
-        ] = (1, "strong_exit_short")
+        # ✅ Apply exit conditions
+        df.loc[reduce(lambda x, y: x & y, strong_exit_long_conditions), ["exit_long", "exit_tag"]] = (1, "strong_exit_long")
+        df.loc[reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]] = (1, "strong_exit_short")
 
         return df
 
     def create_target_T(self, dataframe: DataFrame):
-        dataframe['ma'] = ta.SMA(dataframe, timeperiod=10)
-        dataframe['roc'] = ta.ROC(dataframe, timeperiod=2)
-        dataframe['macd'], dataframe['macdsignal'], dataframe['macdhist'] = ta.MACD(
-            dataframe['close'], slowperiod=12, fastperiod=26)
-        dataframe['momentum'] = ta.MOM(dataframe, timeperiod=4)
-        dataframe['rsi'] = ta.RSI(dataframe, timeperiod=10)
-        bollinger = ta.BBANDS(dataframe, timeperiod=20)
-        dataframe['bb_upperband'] = bollinger['upperband']
-        dataframe['bb_middleband'] = bollinger['middleband']
-        dataframe['bb_lowerband'] = bollinger['lowerband']
-        dataframe['cci'] = ta.CCI(dataframe, timeperiod=20)
-        dataframe['stoch'] = ta.STOCH(dataframe)['slowk']
-        dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
-        dataframe['obv'] = ta.OBV(dataframe)
+        """
+        Creates a target label (T) using scaled log future returns.
+        """
+        lookahead = 10  # Predicting 10 periods ahead
 
-        # ✅ Step 1: Select Indicators for Target Calculation
-        target_input_columns = ["ma", "roc", "macd", "momentum", "rsi", "cci", "stoch", "atr", "obv"]
+        # ✅ Compute log return target
+        dataframe['future_return'] = np.log(dataframe['close'].shift(-lookahead) / dataframe['close'])
 
-        # ✅ Step 2: Load or Train Ridge Regression Model (No Feature Scaling!)
-        ridge_model_path = "./user_data/ridge_model.pkl"
-        try:
-            model = joblib.load(ridge_model_path)
-            logger.info("✅ Loaded pre-trained Ridge model.")
-        except FileNotFoundError:
-            logger.warning("⚠️ Ridge model not found! Retraining...")
-            model = Ridge(alpha=0.1)
-            X = dataframe[target_input_columns].fillna(0)  # ✅ Use raw features, let FreqAI scale them
-            y = dataframe["close"].pct_change().fillna(0)
-            model.fit(X, y)
-            joblib.dump(model, ridge_model_path)  # ✅ Save model for future runs
+        # ✅ Scale `T` so that values are in a reasonable range for training
+        dataframe['T'] = dataframe['future_return'].rolling(window=5).mean() * 100  # Multiply by 100
 
-        # ✅ Step 3: Extract and Normalize Regression Weights
-        feature_weights = dict(zip(target_input_columns, model.coef_))
-        total_weight = sum(abs(v) for v in feature_weights.values()) + 1e-6  # Prevent division by zero
-        normalized_weights = {k: v / total_weight for k, v in feature_weights.items()}
+        # ✅ Optional: Normalize `T` (test with and without)
+        # dataframe['T'] = np.tanh(dataframe['T'])
 
-        # ✅ Step 4: Aggregate Features Using Learned Weights
-        dataframe["S"] = sum(
-            dataframe[feature] * weight for feature, weight in normalized_weights.items()
-        )
-
-        # ✅ Step 5: Market Regime Filter (Stable Over Backtests)
-        dataframe['R'] = np.tanh((dataframe['close'] - dataframe['bb_middleband']) / (dataframe['bb_upperband'] - dataframe['bb_lowerband']))
-        dataframe['ma_100'] = ta.SMA(dataframe, timeperiod=100)
-        dataframe['R2'] = np.tanh((dataframe['close'] - dataframe['ma_100']) / (dataframe['ma_100'] + 1e-6))
-
-        # ✅ Step 6: Stable Volatility Adjustments
-        bb_width_baseline = (dataframe['bb_upperband'] - dataframe['bb_lowerband']).expanding().mean()
-        dataframe['V'] = 1 / (bb_width_baseline + 1e-6)
-
-        atr_baseline = dataframe['atr'].expanding().mean()
-        dataframe['V2'] = 1 / (atr_baseline + 1e-6)
-
-        # ✅ Step 7: Compute Final Target Score (`T`) and Scale It
-        dataframe['T'] = dataframe['S'] * (0.7 * dataframe['R'] + 0.3 * dataframe['R2']) + 0.5 * dataframe['V'] * dataframe['V2']
-        
-        # ✅ Normalize T (Only Scale Target, Not Features!)
-        dataframe['T'] = (dataframe['T'] - dataframe['T'].mean()) / (dataframe['T'].std() + 1e-6)
-        dataframe['T'] = np.clip(dataframe['T'], -1.0, 1.0)  # ✅ Keeps targets within [-1,1]
-        logger.info(f"🔍 Learned Target Weights: {normalized_weights}")
+        # ✅ Fill NaNs
+        dataframe['T'] = dataframe['T'].fillna(0)
 
         return dataframe['T']
     
     def custom_stoploss(self, pair, trade, current_time, current_rate, current_profit, **kwargs) -> float:
-        # ✅ Fetch the latest DataFrame for the given pair and timeframe
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-
-        # ✅ Ensure 'atr' exists in the DataFrame
-        if 'atr' not in dataframe.columns:
-            logger.warning(f"⚠️ ATR indicator missing for {pair}. Returning default stoploss.")
-            return -0.05  # Default stoploss in case ATR is missing
-
-        # ✅ Get the latest ATR value
-        atr_value = dataframe.iloc[-1]['atr']
-
-        # ✅ Calculate dynamic stoploss based on ATR
-        atr_std = dataframe['atr'].rolling(100).std().iloc[-1]  # ✅ Extract latest value
-        atr_multiplier = 0.5 + (atr_std * 0.1)  # ✅ Now it's a single float value
-        if trade.is_short:
-            stoploss_value = current_rate + (atr_value * atr_multiplier)  # Stoploss above price for shorts
-        else:
-            stoploss_value = current_rate - (atr_value * atr_multiplier)  # Stoploss below price for longs
+        df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         
-        # logger.info(f"🛑 Stoploss Debug | Pair: {pair} | ATR: {atr_value:.5f} | Stoploss: {stoploss_value:.5f} | Entry: {trade.open_rate:.5f}")
-
-        return max(stoploss_value, trade.stop_loss)  # Ensures stoploss only tightens
-
+        if 'atr' not in df.columns:
+            logger.warning(f"⚠️ ATR indicator missing for {pair}. Returning default stoploss.")
+            return -0.05  # Default static stoploss
+        
+        atr_value = df.iloc[-1]['atr']
+        trade_duration = (current_time - trade.open_date_utc).total_seconds() / 3600  # Convert to hours
+        
+        if current_profit > 0.02:
+            atr_multiplier = max(1.8, current_profit * 5)  # ✅ Increase stop buffer with profit
+        elif current_profit > 0:
+            atr_multiplier = max(1.3, current_profit * 3)  # ✅ Protect small profits
+        elif current_profit < -0.01:
+            atr_multiplier = 0.8  # ❌ Tighten stop for losing trades
+        else:
+            atr_multiplier = 1.0
+        
+        # ✅ If trade is open for more than 24 hours, tighten stoploss
+        if trade_duration > 24:
+            atr_multiplier *= 0.7  # ✅ Reduce stoploss buffer by 30%
+        
+        if trade.is_short:
+            stoploss_value = current_rate + (atr_value * atr_multiplier)
+        else:
+            stoploss_value = current_rate - (atr_value * atr_multiplier)
+        
+        return max(stoploss_value, trade.stop_loss)  # ✅ Ensures stoploss only tightens
 
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float, time_in_force: str, 
