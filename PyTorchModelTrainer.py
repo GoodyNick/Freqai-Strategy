@@ -279,8 +279,8 @@ class PyTorchLSTMTrainer(PyTorchModelTrainer):
                 self.learning_rate_scheduler.step(test_loss)  # Update the learning rate scheduler
 
             logger.info(
-                f"Epoch {epoch + 1}/{n_epochs} - Train Loss: {epoch_loss / len(data_loaders_dictionary['train']):.4f}")
-            logger.info(f"Epoch {epoch+1} - Learning Rate: {self.optimizer.param_groups[0]['lr']}")
+                f"Epoch {epoch + 1}/{n_epochs} - Train Loss: {epoch_loss / len(data_loaders_dictionary['train']):.4f} - Learning Rate: {self.optimizer.param_groups[0]['lr']}")
+            # logger.info(f"[DEBUG] Epoch {epoch+1} - Learning Rate: {self.optimizer.param_groups[0]['lr']}")
 
     def create_data_loaders_dictionary(
             self, data_dictionary: Dict[str, pd.DataFrame], splits: List[str]

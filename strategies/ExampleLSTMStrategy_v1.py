@@ -15,6 +15,7 @@ from technical import qtpylib
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
 
+from freqtrade import data
 from freqtrade.exchange.exchange_utils import *
 from freqtrade.strategy import IStrategy, RealParameter
 from freqtrade.persistence import Trade
@@ -65,13 +66,19 @@ class ExampleLSTMStrategy_v1(IStrategy):
 
     startup_candle_count = 20
 
-    do_remove_highly_correlated_features = False  # Set to True to remove highly correlated features(enabling this causes 
-                                                  # mismatch between features in trained models and backtest features)
+    # Set to True to remove highly correlated features(enabling this causes 
+    # mismatch between features in trained models and backtest features).
+    # also, these should be enabled without using PCA
+    do_remove_highly_correlated_features = False
+    do_filter_important_features = True  
                                                 
     prediction_metrics_storage = []  # Class-level storage for all pairs
 
     def feature_engineering_expand_all(self, dataframe: DataFrame, period: int,
-                                       metadata: Dict, **kwargs):
+                                    metadata: Dict, **kwargs):
+        """
+        Expands all features for FreqAI and applies filtering before training.
+        """
 
         dataframe["%-cci-period"] = ta.CCI(dataframe, timeperiod=20)
         dataframe["%-rsi-period"] = ta.RSI(dataframe, timeperiod=10)
@@ -79,7 +86,8 @@ class ExampleLSTMStrategy_v1(IStrategy):
         dataframe['%-ma-period'] = ta.SMA(dataframe, timeperiod=10)
         dataframe['%-macd-period'], dataframe['%-macdsignal-period'], dataframe['%-macdhist-period'] = ta.MACD(
             dataframe['close'], slowperiod=12,
-            fastperiod=26)
+            fastperiod=26
+        )
         dataframe['%-roc-period'] = ta.ROC(dataframe, timeperiod=2)
 
         bollinger = qtpylib.bollinger_bands(
@@ -89,17 +97,20 @@ class ExampleLSTMStrategy_v1(IStrategy):
         dataframe["bb_middleband-period"] = bollinger["mid"]
         dataframe["bb_upperband-period"] = bollinger["upper"]
         dataframe["%-bb_width-period"] = (
-                                                 dataframe["bb_upperband-period"]
-                                                 - dataframe["bb_lowerband-period"]
-                                         ) / dataframe["bb_middleband-period"]
-        dataframe["%-close-bb_lower-period"] = (
-                dataframe["close"] / dataframe["bb_lowerband-period"]
-        )
+            dataframe["bb_upperband-period"] - dataframe["bb_lowerband-period"]
+        ) / dataframe["bb_middleband-period"]
+        dataframe["%-close-bb_lower-period"] = dataframe["close"] / dataframe["bb_lowerband-period"]
 
-        # Remove highly correlated features
+        # ✅ Remove highly correlated features (if enabled)
         if self.do_remove_highly_correlated_features:
-            logger.info(f"🔍 Removing highly correlated features.{self.do_remove_highly_correlated_features}")
+            logger.info(f"🔍 Removing highly correlated features.")
             dataframe = self.remove_highly_correlated_features(dataframe)
+
+        # ✅ Apply feature filtering HERE
+        if self.do_filter_important_features:
+            dataframe = self.filter_important_features(dataframe)
+        logger.info(f"🔍 Remaining Features After Filtering: {list(dataframe.columns)}")
+
         return dataframe
 
     def feature_engineering_expand_basic(self, dataframe: DataFrame, metadata: Dict, **kwargs):
@@ -125,30 +136,21 @@ class ExampleLSTMStrategy_v1(IStrategy):
         return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-
         self.freqai_info = self.config["freqai"]
 
         dataframe['T'] = self.create_target_T(dataframe)
         dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
-        # ✅ Apply a single ATR-based stoploss for both long and short trades
-        dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)  # 1.75x ATR
+        dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)
 
-        # logger.info(f"🔍 [DEBUG] Calling freqai.start() for {metadata['pair']}")
-        dataframe = self.freqai.start(dataframe, metadata, self)
+        dataframe = self.freqai.start(dataframe, metadata, self)          
 
-        # ✅ Adjust DI_threshold after FreqAI processes the data
-        # if self.freqai_info["feature_parameters"]["DI_threshold"] == 1.0:  # If using default value
-        #     asset_volatility = dataframe["close"].pct_change().rolling(50).std().mean()
-        #     di_base = 3.0  # Default DI_threshold when volatility is low
-        #     di_threshold = di_base / (1 + asset_volatility * 5)  # Inverse scaling
-        #     self.freqai_info["feature_parameters"]["DI_threshold"] = di_threshold  
-        #     logger.info(f"🔍 Applied Dynamic DI_threshold for {metadata['pair']}: {di_threshold:.2f}")
-        # logger.info(f"🔍 [DEBUG] Current DI_threshold for {metadata['pair']}: {self.freqai_info['feature_parameters']['DI_threshold']}")
-
+        logger.info(f"🔍 do_predict distribution: {dataframe['do_predict'].value_counts()}")
+        
         self.compute_prediction_metrics(dataframe, metadata)
         self.save_prediction_metrics()
         
         return dataframe
+
 
     def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
         confidence_threshold = 0.8  # Minimum confidence required to enter trades
@@ -371,4 +373,25 @@ class ExampleLSTMStrategy_v1(IStrategy):
             logger.info(f"Dropping {len(to_drop)} highly correlated features: {to_drop}")
             dataframe = dataframe.drop(columns=to_drop)
 
-        return dataframe        
+        return dataframe 
+          
+    def filter_important_features(self, dataframe):
+        """
+        Removes all columns that start with '%' unless they are in the important features list.
+        """
+        important_features = {
+            "%-hour_of_day",
+            "%-day_of_week",
+            "%-cci-period_50_BTC/USDTUSDT_4h",
+            "%-pct-change_gen_BTC/USDTUSDT_1h",
+            "%-roc-period_20_BTC/USDTUSDT_2h",
+            "%-rsi-period_10_BTC/USDTUSDT_4h",
+            "%-rsi-period_50_ETH/USDTUSDT_4h",
+            "%-bb_width-period_50_BTC/USDTUSDT_4h"
+        }
+
+        # Drop all columns starting with '%' unless they are in the important_features set
+        columns_to_keep = [col for col in dataframe.columns if not col.startswith("%") or col in important_features]
+        
+        return dataframe[columns_to_keep]
+

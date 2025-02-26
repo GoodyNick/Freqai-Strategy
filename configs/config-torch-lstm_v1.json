@@ -103,16 +103,14 @@
       ],
       "label_period_candles": 12,
       "include_shifted_candidates": 12,
-      "DI_threshold": 2.0,
+      "DI_threshold": 0.5,
       "weight_factor": 0.5,
       "principal_component_analysis": false,
-      "num_pca_components": 20,
+      "num_pca_components": 30,
       "use_SVM_to_remove_outliers": true,      
       "indicator_periods_candles": [
         10,
-        20,
-        50,
-        100
+        50
       ],
       "plot_feature_importances": 40,
       "noise_standard_deviation": 0.01,
