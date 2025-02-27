@@ -5,11 +5,12 @@ import random
 import os
 import pandas as pd
 from typing import Dict, Any
+
 from freqtrade.freqai.base_models.BasePyTorchRegressor import BasePyTorchRegressor
 from freqtrade.freqai.data_kitchen import FreqaiDataKitchen
 from freqtrade.freqai.torch.PyTorchDataConvertor import PyTorchDataConvertor, DefaultPyTorchDataConvertor
-from freqtrade.freqai.torch.PyTorchLSTMModel import PyTorchLSTMModel
-from freqtrade.freqai.torch.PyTorchModelTrainer import PyTorchLSTMTrainer
+from freqtrade.freqai.torch.PyTorchLSTMModel_v2 import PyTorchLSTMModel
+from freqtrade.freqai.torch.PyTorchModelTrainer_v2 import PyTorchLSTMTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def set_seed(seed=42):
 
 set_seed(42)  # Use the same seed every time
 
-class PyTorchLSTMRegressor_v1(BasePyTorchRegressor):
+class PyTorchLSTMRegressor_v2(BasePyTorchRegressor):
     """
     PyTorchLSTMRegressor is a class that uses a PyTorch LSTM model to predict a continuous target variable.
     """

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 # Define variables
-STRATEGY="ExampleLSTMStrategy_v1"
-MODEL="PyTorchLSTMRegressor_v1"
-CONFIG="./user_data/configs/config-torch-lstm_v1.json"
+STRATEGY="ExampleLSTMStrategy_v2"
+MODEL="PyTorchLSTMRegressor_v2"
+CONFIG="./user_data/configs/config-torch-lstm_v2.json"
 TIMERANGE="20240501-20240601"
 PAIR="BTC/USDT:USDT"
 HYPEROPTLOSS="SharpeHyperOptLoss"
