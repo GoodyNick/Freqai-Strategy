@@ -14,6 +14,8 @@ from pandas import DataFrame
 from technical import qtpylib
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
+from scipy.fftpack import fft
+from scipy.stats import zscore
 
 from freqtrade import data
 from freqtrade.exchange.exchange_utils import *
@@ -70,26 +72,28 @@ class ExampleLSTMStrategy_v2(IStrategy):
     # mismatch between features in trained models and backtest features).
     # also, these should be enabled without using PCA
     do_remove_highly_correlated_features = False
-    do_filter_important_features = True  
+    do_filter_important_features = False  
                                                 
     prediction_metrics_storage = []  # Class-level storage for all pairs
 
-    def feature_engineering_expand_all(self, dataframe: DataFrame, period: int,
-                                    metadata: Dict, **kwargs):
+    def feature_engineering_expand_all(self, dataframe: pd.DataFrame, period: int, metadata: Dict, **kwargs):
         """
-        Expands all features for FreqAI and applies filtering before training.
+        Expands features that benefit from multiple timeframes.
         """
 
+        # ✅ Momentum & Trend Indicators (Expanded Over Timeframes)
         dataframe["%-cci-period"] = ta.CCI(dataframe, timeperiod=20)
         dataframe["%-rsi-period"] = ta.RSI(dataframe, timeperiod=10)
         dataframe["%-momentum-period"] = ta.MOM(dataframe, timeperiod=4)
-        dataframe['%-ma-period'] = ta.SMA(dataframe, timeperiod=10)
-        dataframe['%-macd-period'], dataframe['%-macdsignal-period'], dataframe['%-macdhist-period'] = ta.MACD(
-            dataframe['close'], slowperiod=12,
-            fastperiod=26
+        dataframe["%-ma-period"] = ta.SMA(dataframe, timeperiod=10)
+        dataframe["%-roc-period"] = ta.ROC(dataframe, timeperiod=2)
+        
+        # ✅ MACD
+        dataframe["%-macd-period"], dataframe["%-macdsignal-period"], dataframe["%-macdhist-period"] = ta.MACD(
+            dataframe['close'], slowperiod=12, fastperiod=26
         )
-        dataframe['%-roc-period'] = ta.ROC(dataframe, timeperiod=2)
 
+        # ✅ Bollinger Bands
         bollinger = qtpylib.bollinger_bands(
             qtpylib.typical_price(dataframe), window=period, stds=2.2
         )
@@ -101,15 +105,13 @@ class ExampleLSTMStrategy_v2(IStrategy):
         ) / dataframe["bb_middleband-period"]
         dataframe["%-close-bb_lower-period"] = dataframe["close"] / dataframe["bb_lowerband-period"]
 
-        # ✅ Remove highly correlated features (if enabled)
-        if self.do_remove_highly_correlated_features:
-            logger.info(f"🔍 Removing highly correlated features.")
-            dataframe = self.remove_highly_correlated_features(dataframe)
-
-        # ✅ Apply feature filtering HERE
-        if self.do_filter_important_features:
-            dataframe = self.filter_important_features(dataframe)
-        logger.info(f"🔍 Remaining Features After Filtering: {list(dataframe.columns)}")
+        # ✅ Fix NaNs in Expanded Features
+        expanded_features = [
+            "%-cci-period", "%-rsi-period", "%-momentum-period", "%-ma-period",
+            "%-roc-period", "%-macd-period", "%-macdsignal-period", "%-macdhist-period",
+            "bb_lowerband-period", "bb_upperband-period", "%-bb_width-period", "%-close-bb_lower-period"
+        ]
+        dataframe[expanded_features] = dataframe[expanded_features].bfill().fillna(0)  # ✅ Fix applied
 
         return dataframe
 
@@ -121,11 +123,55 @@ class ExampleLSTMStrategy_v2(IStrategy):
 
         return dataframe
 
-    def feature_engineering_standard(self, dataframe: DataFrame, metadata: Dict, **kwargs):
+    def feature_engineering_standard(self, dataframe: pd.DataFrame, metadata: Dict, **kwargs):
+        """
+        Defines features that should remain in their original timeframe.
+        """
 
+        # ✅ Keep existing time-based features
         dataframe['date'] = pd.to_datetime(dataframe['date'])
-        dataframe["%-day_of_week"] = dataframe["date"].dt.dayofweek
-        dataframe["%-hour_of_day"] = dataframe["date"].dt.hour
+        dataframe.loc[:, "%-day_of_week"] = dataframe["date"].dt.dayofweek
+        dataframe.loc[:, "%-hour_of_day"] = dataframe["date"].dt.hour
+
+        # ✅ Rolling Features (Fixed NaNs)
+        dataframe.loc[:, "%-rolling_volatility"] = dataframe["close"].rolling(window=24).std().bfill()
+        dataframe.loc[:, "%-rolling_mean"] = dataframe["close"].rolling(window=24).mean().bfill()
+
+        # ✅ CUSUM (Trend Break Detector - Should NOT be expanded)
+        def get_cusum(series):
+            series_mean = series.mean()
+            return (series - series_mean).cumsum()
+
+        dataframe.loc[:, "%-cusum_close"] = get_cusum(dataframe["close"]).fillna(0)
+
+        # ✅ Hurst Exponent (Trend Strength - Fixed NaNs)
+        def hurst_exponent(ts, max_lag=20):
+            if len(ts) < max_lag:
+                return np.nan
+            lags = range(2, max_lag)
+            tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
+            return np.polyfit(np.log(lags), np.log(tau), 1)[0]
+
+        dataframe.loc[:, "%-hurst"] = dataframe["close"].rolling(window=72).apply(hurst_exponent, raw=True)
+        dataframe.loc[:, "%-hurst"] = dataframe["%-hurst"].fillna(dataframe["%-hurst"].median())
+
+        # ✅ Fourier Transform (Fixed NaNs)
+        def compute_fourier(series, n_components=3):
+            if len(series) < 72:
+                return np.nan
+            fft_vals = fft(series)
+            return np.abs(fft_vals[:n_components]).sum()
+
+        dataframe.loc[:, "%-fourier_price"] = dataframe["close"].rolling(window=72).apply(compute_fourier, raw=True)
+        dataframe.loc[:, "%-fourier_price"] = dataframe["%-fourier_price"].fillna(dataframe["%-fourier_price"].median())
+
+        # ✅ Fix Z-Score Normalization NaNs (Apply AFTER filling raw features)
+        zscore_columns = ["%-rolling_volatility", "%-rolling_mean", "%-cusum_close", "%-hurst", "%-fourier_price"]
+        for col in zscore_columns:
+            dataframe.loc[:, f"{col}-zscore"] = pd.Series(zscore(dataframe[col]), index=dataframe.index).fillna(0)  # ✅ Convert to Series
+
+        logger.info(f"🔍 Total features before model training: {len(dataframe.columns)}")
+
         return dataframe
 
     def set_freqai_targets(self, dataframe: DataFrame, metadata: Dict, **kwargs) -> DataFrame:
@@ -141,6 +187,8 @@ class ExampleLSTMStrategy_v2(IStrategy):
         dataframe['T'] = self.create_target_T(dataframe)
         dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
         dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)
+
+        logger.info(f"🔍 Feature dimensions before training: {dataframe.shape}")
 
         dataframe = self.freqai.start(dataframe, metadata, self)          
 
@@ -212,7 +260,7 @@ class ExampleLSTMStrategy_v2(IStrategy):
         """
         Creates a target label (T) using scaled log future returns.
         """
-        lookahead = 10  # Predicting 10 periods ahead
+        lookahead = 12  # Predicting 10 periods ahead
 
         # ✅ Compute log return target
         dataframe['future_return'] = np.log(dataframe['close'].shift(-lookahead) / dataframe['close'])
@@ -386,8 +434,8 @@ class ExampleLSTMStrategy_v2(IStrategy):
             "%-pct-change_gen_BTC/USDTUSDT_1h",
             "%-roc-period_20_BTC/USDTUSDT_2h",
             "%-rsi-period_10_BTC/USDTUSDT_4h",
-            "%-rsi-period_50_ETH/USDTUSDT_4h",
-            "%-bb_width-period_50_BTC/USDTUSDT_4h"
+            "%-rsi-period_50_ETH/USDTUSDT_4h"
+            # "%-bb_width-period_50_BTC/USDTUSDT_4h"
         }
 
         # Drop all columns starting with '%' unless they are in the important_features set

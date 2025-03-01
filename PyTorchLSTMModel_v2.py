@@ -12,72 +12,89 @@ class PyTorchLSTMModel(nn.Module):
     This class serves as a complex example for the integration of PyTorch models.
     It is designed to handle sequential data and capture long-term dependencies.
 
-    :param input_dim: The number of input features. This parameter specifies the number
-        of features in the input data that the LSTM will use to make predictions.
-    :param output_dim: The number of output classes. This parameter specifies the number
-        of classes that the LSTM will predict.
-    :param hidden_dim: The number of hidden units in each LSTM layer. This parameter controls
-        the complexity of the LSTM and determines how many nonlinear relationships the LSTM
-        can represent. Increasing the number of hidden units can increase the capacity of
-        the LSTM to model complex patterns, but it also increases the risk of overfitting
-        the training data. Default: 100
-    :param dropout_percent: The dropout rate for regularization. This parameter specifies
-        the probability of dropping out a neuron during training to prevent overfitting.
-        The dropout rate should be tuned carefully to balance between underfitting and
-        overfitting. Default: 0.3
-    :param n_layer: The number of LSTM layers. This parameter specifies the number
-        of LSTM layers in the model. Adding more layers can increase its capacity to
-        model complex patterns, but it also increases the risk of overfitting
-        the training data. Default: 1
+    :param input_dim: The number of input features.
+    :param output_dim: The number of output classes.
+    :param num_layers: The number of LSTM layers.
+    :param dropout: Dropout rate for regularization.
 
     :returns: The output of the LSTM, with shape (batch_size, output_dim)
     """
 
-    def __init__(self, input_dim: int, output_dim: int, **kwargs):
-        super().__init__()
-        self.num_lstm_layers: int = kwargs.get("num_lstm_layers", 1)
-        self.hidden_dim: int = kwargs.get("hidden_dim", 100)
-        self.dropout_percent: float = kwargs.get("dropout_percent", 0.3)
+    def __init__(self, input_dim: int, output_dim: int, num_layers: int, dropout: float):
+        super(PyTorchLSTMModel, self).__init__()
 
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.num_layers = num_layers
+
+        # Initialize LSTM layers
         self.lstm_layers = nn.ModuleList()
-        self.batch_norms = nn.ModuleList()
-        self.dropouts = nn.ModuleList()
+        for i in range(num_layers):
+            layer_input_size = input_dim if i == 0 else 128  # First layer uses input_dim, others use 128
+            self.lstm_layers.append(
+                nn.LSTM(input_size=layer_input_size, hidden_size=128, num_layers=1, batch_first=True)
+            )
 
-        self.lstm_layers.append(nn.LSTM(input_dim, self.hidden_dim, batch_first=True))
-        self.batch_norms.append(nn.BatchNorm1d(self.hidden_dim))
-        self.dropouts.append(nn.Dropout(p=self.dropout_percent))
+        # Batch Normalization & Dropout layers
+        self.batch_norms = nn.ModuleList([nn.BatchNorm1d(128, affine=True) for _ in range(num_layers)])
+        self.dropouts = nn.ModuleList([nn.Dropout(dropout) for _ in range(num_layers)])
 
-        if self.num_lstm_layers > 1:
-            for _ in range(self.num_lstm_layers - 1):
-                self.lstm_layers.append(nn.LSTM(self.hidden_dim, self.hidden_dim, batch_first=True))
-                self.batch_norms.append(nn.BatchNorm1d(self.hidden_dim))
-                self.dropouts.append(nn.Dropout(p=self.dropout_percent))
-
-        self.output_scale = torch.nn.Parameter(torch.tensor(1.0))  # Learnable scale factor
-        self.fc1 = nn.Linear(self.hidden_dim, 36)
-        self.alpha_dropout = nn.AlphaDropout(p=0.5)
-        self.fc2 = nn.Linear(36, output_dim)
+        # Fully Connected Layers
+        self.fc1 = nn.Linear(128, 64)
         self.relu = nn.ReLU()
+        self.alpha_dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(64, output_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Ensure input tensor x is of shape (batch_size, sequence_length, input_dim)
         if x.dim() == 2:
             x = x.unsqueeze(1)  # (batch_size, 1, input_dim)
 
-        for i in range(self.num_lstm_layers):
-            self.lstm_layers[i].flatten_parameters()  # ✅ Fix applied
-            x, _ = self.lstm_layers[i](x)
-            if x.dim() == 3:
-                x = self.batch_norms[i](x[:, -1, :])
-            else:
-                x = self.batch_norms[i](x)
-            x = self.dropouts[i](x)
-            if i > 0:
-                x = x + x_res
-            x_res = x
+        x_res = None  # Initialize residual connection variable
+        logger.info(f"LSTM Input Shape: {x.shape}")  # ✅ Check if 3D (batch, time_steps, features)
 
-        x = self.relu(self.fc1(x))
+        for i in range(self.num_layers):
+            self.lstm_layers[i].flatten_parameters()
+            x, _ = self.lstm_layers[i](x)  # LSTM Forward Pass
+
+            # Apply BatchNorm1d correctly: (batch_size, features, seq_len) → normalize → revert shape
+            x = self.batch_norms[i](x.transpose(1, 2)).transpose(1, 2)
+
+            x = self.dropouts[i](x)  # Apply dropout after batch norm
+
+            # Residual Connection
+            if x_res is not None:
+                x = x + x_res  # Skip connection
+            x_res = x  # Store for next layer
+
+        # Fully Connected Layers
+        x = self.relu(self.fc1(x[:, -1, :]))  # Use last LSTM output only
         x = self.alpha_dropout(x)
-        x = self.fc2(x) * self.output_scale  # 🔥 Auto-learns the best scaling
+        x = self.fc2(x)
         return x
+    
+    def save(self, save_path: str):
+        """
+        Saves the PyTorch model state dictionary.
+        
+        :param save_path: Path to save the model.
+        """
+        logger.info(f"💾 Saving model to {save_path}")
+        torch.save(self.state_dict(), save_path)
 
+    @classmethod
+    def load(cls, load_path: str, input_dim: int, output_dim: int, num_layers: int, dropout: float):
+        """
+        Loads a saved model and initializes the class.
+        
+        :param load_path: Path to the saved model.
+        :param input_dim: Number of input features.
+        :param output_dim: Number of output features.
+        :param num_layers: Number of LSTM layers.
+        :param dropout: Dropout rate.
+        :return: Loaded PyTorchLSTMModel instance.
+        """
+        logger.info(f"🔄 Loading model from {load_path}")
+        model = cls(input_dim, output_dim, num_layers, dropout)
+        model.load_state_dict(torch.load(load_path, map_location=torch.device("cpu")))
+        model.eval()  # Ensure model is in evaluation mode
+        return model

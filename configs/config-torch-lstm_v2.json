@@ -54,7 +54,7 @@
       "rateLimit": 50
     },
     "pair_whitelist": [
-      "BTC/USDT:USDT",
+      "BTC/USDT:USDT"
       // "ETH/USDT:USDT",
       // "LTC/USDT:USDT",
       // "BNB/USDT:USDT",
@@ -78,66 +78,72 @@
     }
   ],
   "freqai": {
-    "enabled": true,
-    "identifier": "torch-lstm12",
-    "train_period_days": 240,
-    "fit_live_predictions_candles": 0,
-    "force_model_refresh": false,
-    "model_persistence": true,
-    "backtest_period_days": 60,
-    "expiration_hours": 4,
-    "live_retrain_hours": 4,
-    "purge_old_models": 2,
-    "save_backtest_models": true,
-    "write_metrics_to_disk": true,
-    "activate_tensorboard": false,
-    "feature_parameters": {
-      "include_corr_pairlist": [
-        "BTC/USDT:USDT",
-        "ETH/USDT:USDT"
-      ],
-      "include_timeframes": [
-        "1h",
-        "2h",
-        "4h"
-      ],
-      "label_period_candles": 12,
-      "include_shifted_candidates": 12,
-      "DI_threshold": 0.5,
-      "weight_factor": 0.5,
-      "principal_component_analysis": false,
-      "num_pca_components": 30,
-      "use_SVM_to_remove_outliers": true,      
-      "indicator_periods_candles": [
-        10,
-        50
-      ],
-      "plot_feature_importances": 40,
-      "noise_standard_deviation": 0.01,
-      "buffer_train_data_candles": 20
-    },
-    "data_split_parameters": {
-      "test_size": 0.2,
-      "random_state": 42,
-      "shuffle": false
-    },
-    "model_training_parameters": {
-      "learning_rate": 0.001,
-      "weight_decay": 0.0001,
-      "num_epochs": 50,
-      "use_gpu": true,
-      "enable_feature_importance": true,
-      "enable_early_stopping": false,
-      "trainer_kwargs": {
-        "batch_size": 64,
-        "n_epochs": 50
-        }
+      "enabled": true,
+      "identifier": "torch-lstm12",
+      "train_period_days": 240,
+      "fit_live_predictions_candles": 0,
+      "force_model_refresh": false,
+      "model_persistence": true,
+      "backtest_period_days": 60,
+      "expiration_hours": 4,
+      "live_retrain_hours": 4,
+      "purge_old_models": 2,
+      "save_backtest_models": true,
+      "write_metrics_to_disk": true,
+      "activate_tensorboard": false,
+      "feature_parameters": {
+          "include_corr_pairlist": [
+              "BTC/USDT:USDT",
+              "ETH/USDT:USDT"
+          ],
+          "include_timeframes": [
+              "1h",
+              "2h",
+              "4h"
+          ],
+          "label_period_candles": 12,
+          "include_shifted_candidates": 12,
+          "DI_threshold": 0.5,
+          "weight_factor": 0.5,
+          "principal_component_analysis": false,
+          "num_pca_components": 30,
+          "use_SVM_to_remove_outliers": true,      
+          "indicator_periods_candles": [
+              10,
+              50
+          ],
+          "plot_feature_importances": 40,
+          "noise_standard_deviation": 0.01,
+          "buffer_train_data_candles": 20,
+          
+          // ✅ New additions for LSTM
+          "reshape_3d": [24, 10],  // (time_steps, features)
+          "scale_features": "standard"  // Normalization type (standard/scaled)
+      },
+      "data_split_parameters": {
+          "test_size": 0.2,
+          "random_state": 42,
+          "shuffle": false
+      },
+      "model_training_parameters": {
+          "learning_rate": 0.001,
+          "weight_decay": 0.0001,
+          "num_epochs": 50,
+          "use_gpu": true,
+          "enable_feature_importance": true,
+          "enable_early_stopping": false,
+          "trainer_kwargs": {
+              "batch_size": 64,
+              "n_epochs": 50
+          }
       },
       "model_kwargs": {
-        "num_lstm_layers": 5,
-        "hidden_dim": 384,
-        "dropout_percent": 0.10,
-        "window_size": 80
+          "num_lstm_layers": 5,
+          "hidden_dim": 384,
+          "dropout_percent": 0.10,
+          "window_size": 24,  // ✅ Matches sequence input size for LSTM
+          "input_dim": 10,    // ✅ Defines how many features per timestep
+          "output_dim": 1     // ✅ Single-value regression prediction
       }
   },
   "api_server": {

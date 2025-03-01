@@ -221,37 +221,58 @@ class PyTorchTransformerTrainer(PyTorchModelTrainer):
         return data_loader_dictionary
 
 
-class PyTorchLSTMTrainer(PyTorchModelTrainer):
+class PyTorchLSTMTrainer:
     """
-    Creating a trainer for the LSTM model.
+    Trainer for the LSTM model in FreqAI.
     """
+
     def __init__(
             self,
             model: nn.Module,
             optimizer: Optimizer,
             criterion: nn.Module,
             device: str,
-            data_convertor: PyTorchDataConvertor,
+            data_convertor: Any,
             model_meta_data: Dict[str, Any] = {},
             window_size: int = 1,
             tb_logger: Any = None,
+            batch_size: int = 64,
+            n_epochs: int = 50,
             **kwargs,
     ):
-        super().__init__(
-            model, optimizer, criterion, device, data_convertor,
-            model_meta_data, window_size, tb_logger, **kwargs
-        )
+        self.model = model
+        self.optimizer = optimizer
+        self.criterion = criterion
+        self.device = device
+        self.data_convertor = data_convertor
+        self.model_meta_data = model_meta_data
+        self.window_size = window_size
+        self.tb_logger = tb_logger
+        self.batch_size = batch_size
+        self.n_epochs = n_epochs
+        self.test_batch_counter = 0
+
         self.learning_rate_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.85, patience=20, min_lr=0.0004
+            self.optimizer, mode='min', factor=0.85, patience=10, min_lr=0.0001
         )
 
     def fit(self, data_dictionary: Dict[str, pd.DataFrame], splits: List[str]):
+        """Train the LSTM model on given data."""
         self.model.train()
 
+        # Ensure dataset is not empty
+        if "train_features" not in data_dictionary or "train_labels" not in data_dictionary:
+            raise ValueError("🚨 No training data available. Check dataset filtering and sequence settings.")
+
         data_loaders_dictionary = self.create_data_loaders_dictionary(data_dictionary, splits)
+
+        if "train" not in data_loaders_dictionary or len(data_loaders_dictionary["train"]) == 0:
+            raise ValueError("🚨 Training DataLoader is empty! No samples available.")
+
         n_obs = len(data_dictionary["train_features"])
         n_epochs = self.n_epochs or self.calc_n_epochs(n_obs=n_obs)
         batch_counter = 0
+
         for epoch in range(n_epochs):
             epoch_loss = 0
             for batch_idx, batch_data in enumerate(data_loaders_dictionary["train"]):
@@ -259,45 +280,55 @@ class PyTorchLSTMTrainer(PyTorchModelTrainer):
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
 
-                #[DEBUG] Log only the first batch
-                # if batch_idx == 0:
-                #     logger.info(f"Sample X_train: {xb[:2].cpu().numpy()}, Y_train: {yb[:2].cpu().numpy()}")
-
+                # Ensure correct shape for loss calculation
                 yb_pred = self.model(xb)
-                loss = self.criterion(yb_pred.squeeze(), yb.squeeze())
 
+                if yb_pred.ndim == 3 and yb.ndim == 3:
+                    loss = self.criterion(yb_pred[:, -1, :].squeeze(), yb[:, -1, :].squeeze())
+                else:
+                    loss = self.criterion(yb_pred.squeeze(), yb.squeeze())
+
+                # Backward pass
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 self.optimizer.step()
+
                 self.tb_logger.log_scalar("train_loss", loss.item(), batch_counter)
                 batch_counter += 1
                 epoch_loss += loss.item()
 
-            # evaluation
+            # Evaluate model after each epoch
             if "test" in splits:
                 test_loss = self.estimate_loss(data_loaders_dictionary, "test")
-                self.learning_rate_scheduler.step(test_loss)  # Update the learning rate scheduler
+                self.learning_rate_scheduler.step(test_loss)
 
             logger.info(
-                f"Epoch {epoch + 1}/{n_epochs} - Train Loss: {epoch_loss / len(data_loaders_dictionary['train']):.4f} - Learning Rate: {self.optimizer.param_groups[0]['lr']}")
-            # logger.info(f"[DEBUG] Epoch {epoch+1} - Learning Rate: {self.optimizer.param_groups[0]['lr']}")
+                f"Epoch {epoch + 1}/{n_epochs} - Train Loss: {epoch_loss / len(data_loaders_dictionary['train']):.4f} - "
+                f"LR: {self.optimizer.param_groups[0]['lr']:.6f}"
+            )
 
-    def create_data_loaders_dictionary(
-            self, data_dictionary: Dict[str, pd.DataFrame], splits: List[str]
-    ) -> Dict[str, DataLoader]:
-        """
-        Converts the input data to PyTorch tensors using a data loader.
-        Uses WindowDataset to create windows of data for LSTM.
-        """
+    def create_data_loaders_dictionary(self, data_dictionary: Dict[str, pd.DataFrame], splits: List[str]) -> Dict[str, DataLoader]:
+        """Prepare DataLoaders for training/testing."""
         data_loader_dictionary = {}
         for split in splits:
+            if f"{split}_features" not in data_dictionary or f"{split}_labels" not in data_dictionary:
+                logger.warning(f"⚠️ No data available for {split}. Skipping DataLoader creation.")
+                continue  # Skip missing datasets
+
             x = self.data_convertor.convert_x(data_dictionary[f"{split}_features"], self.device)
             y = self.data_convertor.convert_y(data_dictionary[f"{split}_labels"], self.device)
-            dataset = WindowDataset(x, y, self.window_size)
+
+            if len(x) < self.batch_size:
+                logger.warning(f"⚠️ Dataset for {split} has fewer samples ({len(x)}) than batch size ({self.batch_size}). Reducing batch size.")
+                adjusted_batch_size = max(1, len(x))  # Ensure batch size is at least 1
+            else:
+                adjusted_batch_size = self.batch_size
+
+            dataset = TensorDataset(x, y)
             data_loader = DataLoader(
                 dataset,
-                batch_size=self.batch_size,
-                shuffle=True,
+                batch_size=adjusted_batch_size,
+                shuffle=False,
                 drop_last=True,
                 num_workers=0,
             )
@@ -306,18 +337,29 @@ class PyTorchLSTMTrainer(PyTorchModelTrainer):
         return data_loader_dictionary
 
     @torch.no_grad()
-    def estimate_loss(
-            self,
-            data_loader_dictionary: Dict[str, DataLoader],
-            split: str,
-    ) -> float:
+    def estimate_loss(self, data_loader_dictionary: Dict[str, DataLoader], split: str) -> float:
+        """Estimate model loss on test dataset."""
         self.model.eval()
         total_loss = 0
         num_batches = 0
-        for _, batch_data in enumerate(data_loader_dictionary[split]):
+
+        if split not in data_loader_dictionary:
+            logger.warning(f"⚠️ No DataLoader found for {split}. Skipping loss estimation.")
+            return float('inf')  # Return large loss if no data exists.
+
+        if len(data_loader_dictionary[split]) == 0:
+            logger.warning(f"⚠️ Empty DataLoader for {split}. No batches to process.")
+            return float('inf')  # Prevent division by zero.
+
+        for batch_data in data_loader_dictionary[split]:
             xb, yb = batch_data
             xb = xb.to(self.device)
             yb = yb.to(self.device)
+
+            # Handle incorrect shape in `xb`
+            if xb.shape[-1] != self.model.input_dim:
+                logger.error(f"🚨 Shape mismatch: expected {self.model.input_dim}, got {xb.shape[-1]}")
+                continue  # Skip batch if incorrect shape
 
             yb_pred = self.model(xb)
             loss = self.criterion(yb_pred.squeeze(), yb.squeeze())
@@ -327,7 +369,17 @@ class PyTorchLSTMTrainer(PyTorchModelTrainer):
             self.test_batch_counter += 1
 
         self.model.train()
-        return total_loss / num_batches
+        return total_loss / max(num_batches, 1)  # Prevent division by zero
+    
+    def save(self, save_path: str):
+        """
+        Saves the trained LSTM model to the specified path.
+
+        :param save_path: Path where the model should be saved.
+        """
+        logger.info(f"💾 Saving trained model to: {save_path}")
+        torch.save(self.model.state_dict(), save_path)
+
 
 
 
