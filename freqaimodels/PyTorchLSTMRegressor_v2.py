@@ -35,7 +35,7 @@ class PyTorchLSTMRegressor_v2(BasePyTorchRegressor):
         super().__init__(config=config)
 
         self.hidden_dim = model_kwargs.get("hidden_dim", None)  # ✅ Avoids conflict with feature count
-        self.window_size = model_kwargs.get("window_size", config["freqai"]["model_kwargs"].get("window_size", 30))
+        self.window_size = model_kwargs.get("window_size", config["freqai"]["model_kwargs"].get("window_size", 24))
         self.num_layers = model_kwargs.get("num_lstm_layers", config["freqai"]["model_kwargs"].get("num_lstm_layers", 3))
         self.dropout = model_kwargs.get("dropout_percent", config["freqai"]["model_kwargs"].get("dropout_percent", 0.2))
 
@@ -53,30 +53,57 @@ class PyTorchLSTMRegressor_v2(BasePyTorchRegressor):
         self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
         logger.info(f"🚀 Using {'GPU' if self.device.type == 'cuda' else 'CPU'} for training!")
 
-        n_features = data_dictionary["train_features"].shape[-1]  # 🔥 Correctly infer from input
-        seq_length = self.window_size
+        # ✅ Read `reshape_3d` from config
+        reshape_3d = dk.config.get("freqai", {}).get("feature_parameters", {}).get("reshape_3d", [24, 150])
+        self.window_size, n_features = reshape_3d  # ✅ Dynamically set time_steps and feature count
+
         num_samples = data_dictionary["train_features"].shape[0]
 
-        logger.info(f"🔍 Expected input size: {n_features} features")
+        logger.info(f"🔍 Expected input size: {n_features} features, Time Steps: {self.window_size}")
 
-        if num_samples < seq_length:
-            raise ValueError(f"🚨 Not enough samples ({num_samples}) for the required sequence length ({seq_length}).")
+        if num_samples < self.window_size:
+            raise ValueError(f"🚨 Not enough samples ({num_samples}) for the required sequence length ({self.window_size}).")
 
-        if num_samples % seq_length != 0:
-            num_samples = (num_samples // seq_length) * seq_length
-            data_dictionary["train_features"] = data_dictionary["train_features"][:num_samples]
-            data_dictionary["train_labels"] = data_dictionary["train_labels"][:num_samples]
+        if num_samples % self.window_size != 0:
+            new_size = (num_samples // self.window_size) * self.window_size
+            logger.warning(f"⚠ Reshaping issue detected! Adjusting samples from {num_samples} to {new_size} for LSTM sequence formatting.")
+            data_dictionary["train_features"] = data_dictionary["train_features"][:new_size]
+            data_dictionary["train_labels"] = data_dictionary["train_labels"][:new_size]
 
         self.trained_feature_names = list(data_dictionary["train_features"].columns)
 
-        if isinstance(data_dictionary["train_features"], torch.Tensor):
-            data_dictionary["train_features"] = pd.DataFrame(data_dictionary["train_features"].detach().numpy(), columns=self.trained_feature_names)
-        if isinstance(data_dictionary["train_labels"], torch.Tensor):
-            data_dictionary["train_labels"] = pd.DataFrame(data_dictionary["train_labels"].detach().numpy())
+        train_features_np = data_dictionary["train_features"].values
+        train_labels_np = data_dictionary["train_labels"].values
 
-        # 🔥 Ensure self.model is assigned a proper PyTorchLSTMModel instance
+        # ✅ Reshape features manually
+        num_batches = train_features_np.shape[0] // self.window_size
+        train_features_np = train_features_np.reshape(num_batches, self.window_size, n_features)
+
+        # 🔥 Fix: Reshape labels correctly to match sequence format
+        train_labels_np = train_labels_np.reshape(num_batches, self.window_size, 1)  # ✅ Ensure labels match sequences
+
+        logger.info(f"✅ Feature dimensions after manual reshaping: {train_features_np.shape}")
+        logger.info(f"✅ Label dimensions after manual reshaping: {train_labels_np.shape}")
+
+        # Convert back to Pandas DataFrame before saving
+        data_dictionary["train_features"] = pd.DataFrame(
+            train_features_np.reshape(-1, n_features),
+            columns=self.trained_feature_names
+        )
+        data_dictionary["train_labels"] = pd.DataFrame(
+            train_labels_np.reshape(-1, 1),
+            columns=["T"]
+        )
+
+        # Convert to PyTorch tensors for model training
+        train_features_tensor = torch.tensor(train_features_np, dtype=torch.float32)
+        train_labels_tensor = torch.tensor(train_labels_np, dtype=torch.float32)
+
+        logger.info(f"✅ Final Feature dimensions before training: {train_features_tensor.shape}")
+        logger.info(f"✅ Final Label dimensions before training: {train_labels_tensor.shape}")
+
         self.model = PyTorchLSTMModel(
-            input_dim=n_features,  # ✅ Ensure correct feature count
+            input_dim=n_features,
             output_dim=1,
             num_layers=self.num_layers,
             dropout=self.dropout
@@ -94,20 +121,10 @@ class PyTorchLSTMRegressor_v2(BasePyTorchRegressor):
             window_size=self.window_size,
             **self.trainer_kwargs,
         )
-        
-        logger.info(f"Feature dimensions before training in FreqAI: {data_dictionary['train_features'].shape}")
 
         try:
             trainer.fit(data_dictionary, self.splits)
-
-            # 🔥 Explicitly assign self.model after training and validate
             self.model = trainer.model
-
-            # ✅ Debugging Log: Confirm self.model is correctly assigned
-            if isinstance(self.model, PyTorchLSTMModel):
-                logger.info("✅ self.model correctly assigned to trained PyTorchLSTMModel.")
-            else:
-                logger.error(f"🚨 self.model is NOT the expected LSTM model! Found type: {type(self.model)}")
 
         except Exception as e:
             logger.error(f"🚨 Training failed with error: {e}")

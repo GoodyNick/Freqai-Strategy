@@ -50,7 +50,6 @@ class PyTorchLSTMModel(nn.Module):
             x = x.unsqueeze(1)  # (batch_size, 1, input_dim)
 
         x_res = None  # Initialize residual connection variable
-        logger.info(f"LSTM Input Shape: {x.shape}")  # ✅ Check if 3D (batch, time_steps, features)
 
         for i in range(self.num_layers):
             self.lstm_layers[i].flatten_parameters()
@@ -70,6 +69,7 @@ class PyTorchLSTMModel(nn.Module):
         x = self.relu(self.fc1(x[:, -1, :]))  # Use last LSTM output only
         x = self.alpha_dropout(x)
         x = self.fc2(x)
+        
         return x
     
     def save(self, save_path: str):

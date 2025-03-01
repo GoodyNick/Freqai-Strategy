@@ -117,7 +117,7 @@
           "buffer_train_data_candles": 20,
           
           // ✅ New additions for LSTM
-          "reshape_3d": [24, 10],  // (time_steps, features)
+          "reshape_3d": [24, 150],  // (time_steps, features)
           "scale_features": "standard"  // Normalization type (standard/scaled)
       },
       "data_split_parameters": {
