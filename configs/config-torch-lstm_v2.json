@@ -115,8 +115,8 @@
           "DI_threshold": 2.0,
           "weight_factor": 0.5,
           "principal_component_analysis": true,
-          "num_pca_components": 30,
-          "use_SVM_to_remove_outliers": false,      
+          "num_pca_components": 20,
+          "use_SVM_to_remove_outliers": true,      
           "indicator_periods_candles": [
               10,
               50
@@ -141,7 +141,7 @@
           "weight_decay": 0.0001,
           "num_epochs": 100,
           "use_gpu": true,
-          "enable_feature_importance": true,
+          "enable_feature_importance": false,
           "enable_early_stopping": true,
           "trainer_kwargs": {
               "batch_size": 64,
