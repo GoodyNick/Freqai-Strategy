@@ -256,26 +256,12 @@ class ExampleLSTMStrategy_v2(IStrategy):
 
         return df
 
-    def create_target_T(self, dataframe: DataFrame):
-        """
-        Creates a target label (T) using scaled log future returns.
-        """
-        lookahead = 12  # Predicting 10 periods ahead
+    def create_target_T(self, dataframe: pd.DataFrame) -> pd.Series:
+        lookahead = 10
+        dataframe["future_return"] = dataframe["close"].shift(-lookahead) / dataframe["close"] - 1
+        dataframe["T"] = np.tanh(dataframe["future_return"])
+        return dataframe["T"]
 
-        # ✅ Compute log return target
-        dataframe['future_return'] = np.log(dataframe['close'].shift(-lookahead) / dataframe['close'])
-
-        # ✅ Scale `T` so that values are in a reasonable range for training
-        dataframe['T'] = dataframe['future_return'].rolling(window=5).mean() * 100  # Multiply by 100
-
-        # ✅ Optional: Normalize `T` (test with and without)
-        # dataframe['T'] = np.tanh(dataframe['T'])
-
-        # ✅ Fill NaNs
-        dataframe['T'] = dataframe['T'].fillna(0)
-
-        return dataframe['T']
-    
     def custom_stoploss(self, pair, trade, current_time, current_rate, current_profit, **kwargs) -> float:
         df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         

@@ -257,55 +257,46 @@ class PyTorchLSTMTrainer:
         )
 
     def fit(self, data_dictionary: Dict[str, pd.DataFrame], splits: List[str]):
-        """Train the LSTM model on given data."""
+        """Train the LSTM model with optimized logging."""
         self.model.train()
 
-        # Ensure dataset is not empty
-        if "train_features" not in data_dictionary or "train_labels" not in data_dictionary:
-            raise ValueError("🚨 No training data available. Check dataset filtering and sequence settings.")
-
         data_loaders_dictionary = self.create_data_loaders_dictionary(data_dictionary, splits)
-
-        if "train" not in data_loaders_dictionary or len(data_loaders_dictionary["train"]) == 0:
-            raise ValueError("🚨 Training DataLoader is empty! No samples available.")
-
         n_obs = len(data_dictionary["train_features"])
         n_epochs = self.n_epochs or self.calc_n_epochs(n_obs=n_obs)
         batch_counter = 0
 
         for epoch in range(n_epochs):
             epoch_loss = 0
+
             for batch_idx, batch_data in enumerate(data_loaders_dictionary["train"]):
                 xb, yb = batch_data
                 xb = xb.to(self.device)
                 yb = yb.to(self.device)
 
-                # Ensure correct shape for loss calculation
                 yb_pred = self.model(xb)
+                loss = self.criterion(yb_pred.squeeze(), yb.squeeze())
 
-                if yb_pred.ndim == 3 and yb.ndim == 3:
-                    loss = self.criterion(yb_pred[:, -1, :].squeeze(), yb[:, -1, :].squeeze())
-                else:
-                    loss = self.criterion(yb_pred.squeeze(), yb.squeeze())
-
-                # Backward pass
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 self.optimizer.step()
 
-                self.tb_logger.log_scalar("train_loss", loss.item(), batch_counter)
-                batch_counter += 1
                 epoch_loss += loss.item()
 
-            # Evaluate model after each epoch
+            avg_epoch_loss = epoch_loss / len(data_loaders_dictionary["train"])
+
+            # ✅ More concise logging (log every 10 epochs, first and last 5 epochs)
+            if epoch < 5 or epoch % 10 == 0 or epoch >= (n_epochs - 5):
+                logger.info(
+                    f"Epoch {epoch + 1}/{n_epochs} - Loss: {avg_epoch_loss:.4f} - LR: {self.optimizer.param_groups[0]['lr']:.6f}"
+                )
+
+            # ✅ Adjust learning rate if applicable
             if "test" in splits:
                 test_loss = self.estimate_loss(data_loaders_dictionary, "test")
                 self.learning_rate_scheduler.step(test_loss)
 
-            logger.info(
-                f"Epoch {epoch + 1}/{n_epochs} - Train Loss: {epoch_loss / len(data_loaders_dictionary['train']):.4f} - "
-                f"LR: {self.optimizer.param_groups[0]['lr']:.6f}"
-            )
+        # ✅ Final Summary Log
+        logger.info(f"✅ Training Completed | Total Epochs: {n_epochs} | Final Train Loss: {avg_epoch_loss:.4f}")
 
     def create_data_loaders_dictionary(self, data_dictionary: Dict[str, pd.DataFrame], splits: List[str]) -> Dict[str, DataLoader]:
         """Prepare DataLoaders for training/testing."""

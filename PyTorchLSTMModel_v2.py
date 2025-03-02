@@ -4,7 +4,6 @@ from torch import nn
 
 logger = logging.getLogger(__name__)
 
-
 class PyTorchLSTMModel(nn.Module):
     """
     A Long Short-Term Memory (LSTM) model implemented using PyTorch.
@@ -27,7 +26,7 @@ class PyTorchLSTMModel(nn.Module):
         self.output_dim = output_dim
         self.num_layers = num_layers
 
-        # Initialize LSTM layers
+        # Initialize LSTM layers dynamically based on input feature count
         self.lstm_layers = nn.ModuleList()
         for i in range(num_layers):
             layer_input_size = input_dim if i == 0 else 128  # First layer uses input_dim, others use 128

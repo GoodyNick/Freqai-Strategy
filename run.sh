@@ -4,7 +4,7 @@
 STRATEGY="ExampleLSTMStrategy_v2"
 MODEL="PyTorchLSTMRegressor_v2"
 CONFIG="./user_data/configs/config-torch-lstm_v2.json"
-TIMERANGE="20240501-20240601"
+TIMERANGE="20240401-20240501"
 PAIR="BTC/USDT:USDT"
 HYPEROPTLOSS="SharpeHyperOptLoss"
 SPACES="buy sell"
