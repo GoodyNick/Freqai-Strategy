@@ -89,11 +89,11 @@
   "freqai": {
       "enabled": true,
       "identifier": "torch-lstm12",
-      "train_period_days": 60,
+      "train_period_days": 180,
       "fit_live_predictions_candles": 0,
       "force_model_refresh": false,
       "model_persistence": true,
-      "backtest_period_days": 7,
+      "backtest_period_days": 60,
       "expiration_hours": 4,
       "live_retrain_hours": 4,
       "purge_old_models": 2,
@@ -110,16 +110,20 @@
               "2h",
               "4h"
           ],
-          "label_period_candles": 24,
+          "label_period_candles": 12,
           "include_shifted_candidates": 12,
           "DI_threshold": 2.0,
           "weight_factor": 0.5,
           "principal_component_analysis": true,
-          "num_pca_components": 20,
+          "num_pca_components": 30,
           "use_SVM_to_remove_outliers": true,      
           "indicator_periods_candles": [
+              5,
               10,
-              50
+              20,
+              50,
+              100,
+              200
           ],
           "plot_feature_importances": 40,
           "noise_standard_deviation": 0.01,
@@ -138,7 +142,7 @@
       },
       "model_training_parameters": {
           "learning_rate": 0.001,
-          "weight_decay": 0.0001,
+          "weight_decay": 0.0005,
           "num_epochs": 100,
           "use_gpu": true,
           "enable_feature_importance": false,

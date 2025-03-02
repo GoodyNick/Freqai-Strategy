@@ -184,6 +184,7 @@ class ExampleLSTMStrategy_v2(IStrategy):
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         self.freqai_info = self.config["freqai"]
 
+        # this is to be used for plotting and stoploss
         dataframe['T'] = self.create_target_T(dataframe)
         dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
         dataframe['dynamic_stoploss'] = np.clip(-dataframe['atr'] * 1.75, -0.03, -0.10)
@@ -199,68 +200,93 @@ class ExampleLSTMStrategy_v2(IStrategy):
         
         return dataframe
 
-
     def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.8  # Minimum confidence required to enter trades
+        confidence_threshold = 0.55  # ✅ Reduced to allow more trades
 
-        # ✅ Compute dynamic thresholds using rolling statistics of the prediction (`&-s_target`)
+        # ✅ Compute dynamic thresholds using rolling statistics
         prediction_mean = df["&-s_target"].rolling(100).mean()
         prediction_std = df["&-s_target"].rolling(100).std()
 
-        long_threshold = prediction_mean + 0.5 * prediction_std  # ✅ Dynamic long threshold
-        short_threshold = prediction_mean - 0.5 * prediction_std  # ✅ Dynamic short threshold
+        long_threshold = prediction_mean + 0.2 * prediction_std  # ✅ More trades
+        short_threshold = prediction_mean - 0.2 * prediction_std  # ✅ More trades
 
-        # ✅ Use crossover conditions for trade triggers
         enter_long_conditions = [
-            df["do_predict"] == 1,
-            qtpylib.crossed_above(df["&-s_target"], long_threshold),  # ✅ Long trigger using crossover
+            df["do_predict"] >= 0,  # ✅ Allowing `do_predict = 0` for testing
+            qtpylib.crossed_above(df["&-s_target"], long_threshold),
             df["prediction_confidence"] > confidence_threshold,
             df["volume"] > 0
         ]
 
         enter_short_conditions = [
-            df["do_predict"] == 1,
-            qtpylib.crossed_below(df["&-s_target"], short_threshold),  # ✅ Short trigger using crossover
+            df["do_predict"] >= 0,  # ✅ Same change for shorts
+            qtpylib.crossed_below(df["&-s_target"], short_threshold),
             df["prediction_confidence"] > confidence_threshold,
             df["volume"] > 0
         ]
 
-        # ✅ Apply entry conditions
         df.loc[reduce(lambda x, y: x & y, enter_long_conditions), ["enter_long", "enter_tag"]] = (1, "long")
         df.loc[reduce(lambda x, y: x & y, enter_short_conditions), ["enter_short", "enter_tag"]] = (1, "short")
 
         return df
 
+
     def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.85  # Slightly higher confidence for exits
+        confidence_threshold = 0.7  # ✅ Adjusted for more exits
 
-        # ✅ Compute adaptive exit threshold based on rolling median of predictions (`&-s_target`)
-        exit_threshold = df["&-s_target"].rolling(100).median()
+        # ✅ Use a more dynamic exit threshold
+        exit_threshold = df["&-s_target"].rolling(50).mean()
 
-        # ✅ Use crossovers instead of static comparisons
         strong_exit_long_conditions = [
-            df["do_predict"] == 1,
-            qtpylib.crossed_below(df["&-s_target"], exit_threshold),  # ✅ Exit long only on crossover
+            df["do_predict"] >= 0,  # ✅ Matches entry logic for now
+            qtpylib.crossed_below(df["&-s_target"], exit_threshold),
             df["prediction_confidence"] > confidence_threshold
         ]
 
         strong_exit_short_conditions = [
-            df["do_predict"] == 1,
-            qtpylib.crossed_above(df["&-s_target"], exit_threshold),  # ✅ Exit short only on crossover
+            df["do_predict"] >= 0,
+            qtpylib.crossed_above(df["&-s_target"], exit_threshold),
             df["prediction_confidence"] > confidence_threshold
         ]
 
-        # ✅ Apply exit conditions
         df.loc[reduce(lambda x, y: x & y, strong_exit_long_conditions), ["exit_long", "exit_tag"]] = (1, "strong_exit_long")
         df.loc[reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]] = (1, "strong_exit_short")
 
         return df
 
+
     def create_target_T(self, dataframe: pd.DataFrame) -> pd.Series:
-        lookahead = 10
-        dataframe["future_return"] = dataframe["close"].shift(-lookahead) / dataframe["close"] - 1
-        dataframe["T"] = np.tanh(dataframe["future_return"])
+        """
+        Creates a new target (T) based on normalized future price change using ATR.
+        """
+
+        dataframe["ATR"] = ta.ATR(dataframe, timeperiod=14).bfill()  # ATR-based normalization
+        dataframe["close"] = dataframe["close"].replace(0, np.nan).bfill()  # Prevent division by zero
+
+        # ✅ Compute dynamic lookahead (ensuring valid values)
+        dataframe["lookahead_dynamic"] = np.clip((dataframe["ATR"] / dataframe["close"]) * 100, 5, 20).fillna(10).astype(int)
+
+        # ✅ Compute Future Price Change dynamically using `.apply()`
+        dataframe["future_change"] = dataframe.apply(
+            lambda row: dataframe["close"].shift(-int(row["lookahead_dynamic"])).iloc[row.name] - row["close"],
+            axis=1
+        )
+
+        # ✅ Compute Trend Strength Using Future Price Change
+        dataframe["TS"] = dataframe["future_change"].rolling(14).mean()
+
+        # ✅ Normalize Trend Strength Using ATR + Std Dev
+        dataframe["T"] = dataframe["TS"] / (
+            0.5 * dataframe["ATR"] + 0.5 * dataframe["close"].rolling(14).std() + 1e-6
+        )
+
+        # ✅ Apply `tanh()` to Limit Extreme Values
+        dataframe["T"] = np.tanh(dataframe["T"])
+
+        # ✅ Fill NaNs Safely
+        dataframe["T"].fillna(0, inplace=True)
+
         return dataframe["T"]
+
 
     def custom_stoploss(self, pair, trade, current_time, current_rate, current_profit, **kwargs) -> float:
         df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)

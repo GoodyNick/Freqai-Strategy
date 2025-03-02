@@ -70,18 +70,17 @@ class PyTorchLSTMRegressor_v2(BasePyTorchRegressor):
                 dropout=self.dropout
             ).to(self.device)
 
+        # ✅ Correct `num_batches` calculation
         num_batches = train_features_np.shape[0] // self.window_size
-        expected_size = (num_batches * self.window_size * n_features)
-        actual_size = train_features_np.size
 
-        # Compute the expected size
-        expected_size = (self.window_size * n_features)
-        num_batches = train_features_np.shape[0] // expected_size
+        # ✅ Ensure we do not attempt to reshape more data than available
+        trimmed_size = num_batches * self.window_size
+        train_features_np = train_features_np[:trimmed_size]
+        train_labels_np = train_labels_np[:trimmed_size]
 
-        # Ensure dataset can be reshaped properly
-        train_features_np = train_features_np[:num_batches * expected_size]  # Trim excess
+        # ✅ Proper reshaping
         train_features_np = train_features_np.reshape(num_batches, self.window_size, n_features)
-
+        train_labels_np = train_labels_np.reshape(num_batches, self.window_size, 1)
 
         logger.info(f"✅ Feature dimensions after reshaping: {train_features_np.shape}")
         logger.info(f"✅ Label dimensions after reshaping: {train_labels_np.shape}")
@@ -111,6 +110,7 @@ class PyTorchLSTMRegressor_v2(BasePyTorchRegressor):
 
         # ✅ Compute feature importance if enabled
         if self.config["freqai"]["model_training_parameters"].get("enable_feature_importance", False):
+            logger.info("🔍 Computing feature importance scores")
             self.compute_feature_importance(data_dictionary)
 
         return self.model
