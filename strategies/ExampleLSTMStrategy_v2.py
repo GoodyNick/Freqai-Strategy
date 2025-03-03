@@ -211,14 +211,14 @@ class ExampleLSTMStrategy_v2(IStrategy):
         short_threshold = prediction_mean - 0.2 * prediction_std  # ✅ More trades
 
         enter_long_conditions = [
-            df["do_predict"] >= 0,  # ✅ Allowing `do_predict = 0` for testing
+            df["do_predict"] == 1,  # ✅ Allowing `do_predict = 0` for testing
             qtpylib.crossed_above(df["&-s_target"], long_threshold),
             df["prediction_confidence"] > confidence_threshold,
             df["volume"] > 0
         ]
 
         enter_short_conditions = [
-            df["do_predict"] >= 0,  # ✅ Same change for shorts
+            df["do_predict"] == 1,  # ✅ Same change for shorts
             qtpylib.crossed_below(df["&-s_target"], short_threshold),
             df["prediction_confidence"] > confidence_threshold,
             df["volume"] > 0
@@ -231,7 +231,7 @@ class ExampleLSTMStrategy_v2(IStrategy):
 
 
     def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.7  # ✅ Adjusted for more exits
+        confidence_threshold = 0.55  # ✅ Adjusted for more exits
 
         # ✅ Use a more dynamic exit threshold
         exit_threshold = df["&-s_target"].rolling(50).mean()
@@ -252,7 +252,6 @@ class ExampleLSTMStrategy_v2(IStrategy):
         df.loc[reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]] = (1, "strong_exit_short")
 
         return df
-
 
     def create_target_T(self, dataframe: pd.DataFrame) -> pd.Series:
         """
@@ -282,8 +281,8 @@ class ExampleLSTMStrategy_v2(IStrategy):
         # ✅ Apply `tanh()` to Limit Extreme Values
         dataframe["T"] = np.tanh(dataframe["T"])
 
-        # ✅ Fill NaNs Safely
-        dataframe["T"].fillna(0, inplace=True)
+        # 🔧 Fix: No more inplace modification
+        dataframe["T"] = dataframe["T"].fillna(0)
 
         return dataframe["T"]
 

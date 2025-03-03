@@ -1,7 +1,7 @@
 {
   "trading_mode": "futures",
   "margin_mode": "isolated",
-  "max_open_trades": -1,
+  "max_open_trades": 10,
   "stake_currency": "USDT",
   "stake_amount": 100,
   "tradable_balance_ratio": 0.99,
@@ -55,16 +55,16 @@
       "rateLimit": 50
     },
     "pair_whitelist": [
-      "BTC/USDT:USDT"
+      "BTC/USDT:USDT",
       // "ETH/USDT:USDT",
-      // "LTC/USDT:USDT",
-      // "BNB/USDT:USDT",
-      // "XRP/USDT:USDT",
-      // "ADA/USDT:USDT",
-      // "DOT/USDT:USDT",
-      // "SOL/USDT:USDT",
-      // "LINK/USDT:USDT",
-      // "AVAX/USDT:USDT"
+      "LTC/USDT:USDT",
+      "BNB/USDT:USDT",
+      "XRP/USDT:USDT",
+      "ADA/USDT:USDT",
+      "DOT/USDT:USDT",
+      "SOL/USDT:USDT",
+      "LINK/USDT:USDT",
+      "AVAX/USDT:USDT"
     ],
     "pair_blacklist": []
   },
@@ -112,11 +112,11 @@
           ],
           "label_period_candles": 12,
           "include_shifted_candidates": 12,
-          "DI_threshold": 2.0,
+          "DI_threshold": 10.0,
           "weight_factor": 0.5,
           "principal_component_analysis": true,
           "num_pca_components": 30,
-          "use_SVM_to_remove_outliers": true,      
+          "use_SVM_to_remove_outliers": false,      
           "indicator_periods_candles": [
               5,
               10,

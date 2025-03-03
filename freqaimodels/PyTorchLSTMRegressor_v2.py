@@ -85,8 +85,8 @@ class PyTorchLSTMRegressor_v2(BasePyTorchRegressor):
         logger.info(f"✅ Feature dimensions after reshaping: {train_features_np.shape}")
         logger.info(f"✅ Label dimensions after reshaping: {train_labels_np.shape}")
 
-        train_features_tensor = torch.tensor(train_features_np, dtype=torch.float32).to(self.device)
-        train_labels_tensor = torch.tensor(train_labels_np, dtype=torch.float32).to(self.device)
+        # train_features_tensor = torch.tensor(train_features_np, dtype=torch.float32).to(self.device)
+        # train_labels_tensor = torch.tensor(train_labels_np, dtype=torch.float32).to(self.device)
 
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         criterion = torch.nn.SmoothL1Loss()
