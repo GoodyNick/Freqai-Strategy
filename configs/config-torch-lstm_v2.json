@@ -1,4 +1,16 @@
 {
+  "loglevel": "INFO",
+  "logger": {
+      "console": {
+          "enabled": true,
+          "loglevel": "INFO"
+      },
+      "file": {
+          "enabled": true,
+          "loglevel": "INFO",
+          "filename": "freqtrade.log"
+      }
+  },
   "trading_mode": "futures",
   "margin_mode": "isolated",
   "max_open_trades": 10,
@@ -55,16 +67,16 @@
       "rateLimit": 50
     },
     "pair_whitelist": [
-      "BTC/USDT:USDT",
+      "BTC/USDT:USDT"
       // "ETH/USDT:USDT",
-      "LTC/USDT:USDT",
-      "BNB/USDT:USDT",
-      "XRP/USDT:USDT",
-      "ADA/USDT:USDT",
-      "DOT/USDT:USDT",
-      "SOL/USDT:USDT",
-      "LINK/USDT:USDT",
-      "AVAX/USDT:USDT"
+      // "LTC/USDT:USDT",
+      // "BNB/USDT:USDT",
+      // "XRP/USDT:USDT",
+      // "ADA/USDT:USDT",
+      // "DOT/USDT:USDT",
+      // "SOL/USDT:USDT",
+      // "LINK/USDT:USDT",
+      // "AVAX/USDT:USDT"
     ],
     "pair_blacklist": []
   },
@@ -112,10 +124,10 @@
           ],
           "label_period_candles": 12,
           "include_shifted_candidates": 12,
-          "DI_threshold": 10.0,
+          "DI_threshold": 5.0,
           "weight_factor": 0.5,
           "principal_component_analysis": true,
-          "num_pca_components": 30,
+          "num_pca_components": 20,
           "use_SVM_to_remove_outliers": false,      
           "indicator_periods_candles": [
               5,
