@@ -36,7 +36,6 @@ class ExampleLSTMStrategy_v2(IStrategy):
 
     plot_config = {
         "main_plot": {
-            "stoploss": {"color": "red", "plot_type": "line"},  # Stoploss as a red line
         },
         "subplots": {
             "predictions": {
@@ -223,25 +222,25 @@ class ExampleLSTMStrategy_v2(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.55  
+        confidence_threshold = 0.45  # Reduced to allow more trades
 
-        # ✅ Loosen T-based filtering even more
+        # ✅ Adaptive Trend Thresholds
+        df["dynamic_T_threshold"] = df["atr"] * 0.002
+        df["vol_rank"] = df["volume"].rolling(50).rank(pct=True)
+        df["valid_volume"] = df["vol_rank"] > 0.10  # More permissive
+
         enter_long_conditions = [
             df["do_predict"] == 1,  
-            (qtpylib.crossed_above(df["&-s_target"], df["long_threshold"])) &  
-            (df["T"] > 0.005),  # ✅ Allow weaker trends (was 0.01)
-            (df["T"].rolling(5).mean() > df["T"]) | (df["T"].shift(1) > 0.005),  # ✅ Shorter momentum check
-            df["prediction_confidence"] > confidence_threshold,
-            df["volume"] > 0
+            df["T"] > 0,  # ✅ Allow weaker bullish trends (was filtering small trends before)
+            df["valid_volume"] == True,  
+            df["prediction_confidence"] > confidence_threshold
         ]
 
         enter_short_conditions = [
             df["do_predict"] == 1,  
-            (qtpylib.crossed_below(df["&-s_target"], df["short_threshold"])) &  
-            (df["T"] < -0.005),  # ✅ Allow weaker trends
-            (df["T"].rolling(5).mean() < df["T"]) | (df["T"].shift(1) < -0.005),  # ✅ Shorter momentum check
-            df["prediction_confidence"] > confidence_threshold,
-            df["volume"] > 0
+            df["T"] < -df["dynamic_T_threshold"],
+            df["valid_volume"] == True,
+            df["prediction_confidence"] > confidence_threshold
         ]
 
         df.loc[reduce(lambda x, y: x & y, enter_long_conditions), ["enter_long", "enter_tag"]] = (1, "long")
@@ -249,26 +248,34 @@ class ExampleLSTMStrategy_v2(IStrategy):
 
         return df
 
-
     def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
-        confidence_threshold = 0.55  
+        confidence_threshold = 0.45  # Reduced to allow more exits
 
-        # ✅ Compute dynamic exit threshold using a rolling average
-        df["exit_threshold"] = df["&-s_target"].rolling(10).mean()  # ✅ Shorter exit filter
+        # ✅ Compute dynamic exit threshold
+        df["dynamic_exit_threshold"] = df["&-s_target"].rolling(2).mean() + (df["atr"] * 0.0008)
+        
+        # ✅ Faster trend change detection
+        df["trend_change"] = (df["T"].diff(1).abs() > df["T"].rolling(2).std())
+
+        # ✅ Ensure profit-based exit exists
+        if "current_profit" in df.columns:
+            df["profit_based_exit"] = (df["current_profit"] > 0.005) & (df["T"] < 0.005)  # ✅ Reduced from 1.5%
+        else:
+            df["profit_based_exit"] = False  
 
         strong_exit_long_conditions = [
             df["do_predict"] >= 0,
-            (qtpylib.crossed_below(df["&-s_target"], df["exit_threshold"])) &  
-            (df["&-s_target"].rolling(3).mean() < df["exit_threshold"]),  # ✅ Faster exit detection
-            (df["T"] < 0.01),  # ✅ Exit earlier if trend weakens
+            df["trend_change"] == True,  
+            df["&-s_target"] < df["dynamic_exit_threshold"],  
+            (df["T"] < 0.01) | df["profit_based_exit"],  
             df["prediction_confidence"] > confidence_threshold
         ]
 
         strong_exit_short_conditions = [
             df["do_predict"] >= 0,
-            (qtpylib.crossed_above(df["&-s_target"], df["exit_threshold"])) &  
-            (df["&-s_target"].rolling(3).mean() > df["exit_threshold"]),  
-            (df["T"] > -0.01),  # ✅ Exit earlier if trend weakens
+            df["trend_change"] == True,  
+            df["&-s_target"] > df["dynamic_exit_threshold"],
+            (df["T"] > -0.05) | df["profit_based_exit"],  # ✅ Lowered from -0.03
             df["prediction_confidence"] > confidence_threshold
         ]
 
@@ -276,7 +283,6 @@ class ExampleLSTMStrategy_v2(IStrategy):
         df.loc[reduce(lambda x, y: x & y, strong_exit_short_conditions), ["exit_short", "exit_tag"]] = (1, "strong_exit_short")
 
         return df
-
 
     def create_target_T(self, dataframe: pd.DataFrame) -> pd.Series:
         """
@@ -314,10 +320,10 @@ class ExampleLSTMStrategy_v2(IStrategy):
     def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float,
                         current_profit: float, **kwargs) -> float:
         """
-        Dynamically adjusts stoploss while ensuring it's correctly stored in the dataframe for plotting.
+        Dynamically adjusts stoploss and ensures stoploss values exist persistently for plotting.
         """
 
-        # Load dataframe for the pair
+        # ✅ Load dataframe
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
 
         if dataframe is None or dataframe.empty:
@@ -326,7 +332,7 @@ class ExampleLSTMStrategy_v2(IStrategy):
         last_candle = dataframe.iloc[-1]
         atr = last_candle['atr'] if 'atr' in last_candle else 0
 
-        # Dynamic ATR multiplier based on profit
+        # ✅ Adjust ATR multiplier dynamically
         if current_profit > 0.02:
             atr_multiplier = 2.0  
         elif current_profit > 0:
@@ -338,22 +344,18 @@ class ExampleLSTMStrategy_v2(IStrategy):
 
         buffer = atr * 0.5 if current_profit > 0.01 else 0
 
-        # Compute stoploss
-        if trade.is_short:
-            stoploss_value = current_rate + (atr * atr_multiplier) + buffer  
-        else:
-            stoploss_value = current_rate - (atr * atr_multiplier) - buffer  
+        # ✅ Compute stoploss
+        stoploss_value = current_rate + (atr * atr_multiplier) + buffer if trade.is_short else \
+                        current_rate - (atr * atr_multiplier) - buffer
 
-        # Store stoploss in dataframe
-        dataframe.at[dataframe.index[-1], 'stoploss'] = stoploss_value
+        # ✅ Ensure stoploss column exists and update it directly
+        if "stoploss" not in dataframe.columns:
+            dataframe["stoploss"] = np.nan
 
-        # ✅ Debugging: Print dataframe sample
-        logger.info(f"🔍 DataFrame Sample (Last 5 Rows):\n{dataframe[['date', 'close', 'stoploss']].tail()}")
-
-        # ✅ Ensure stoploss is included in plot_config
-        self.plot_config["main_plot"]["stoploss"] = {"color": "red", "plot_type": "line"}
+        dataframe.at[last_candle.name, "stoploss"] = stoploss_value
 
         return stoploss_value
+
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float, time_in_force: str, 
                         current_time, entry_tag, side: str, **kwargs) -> bool:
